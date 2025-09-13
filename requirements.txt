@@ -1,3 +1,5 @@
 flask
 pyqt5
+pandas
+openpyxl
 # ...ide jöhetnek további csomagok...
