@@ -3,7 +3,8 @@ from PyQt6.QtWidgets import (
     QApplication, QWidget, QTabWidget, QVBoxLayout, QPushButton, QHBoxLayout,
     QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox, QLineEdit, QLabel
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QColor
 import pandas as pd
 from pandas_db import (
     load_db, save_db, load_eredmeny_db, save_eredmeny_db,
@@ -13,7 +14,7 @@ from pandas_db import (
 from datetime import datetime
 
 class TableTab(QWidget):
-    def __init__(self, load_func, save_func, columns, parent=None, update_last_changed_col=None, gender_col=None, enable_search=False):
+    def __init__(self, load_func, save_func, columns, parent=None, update_last_changed_col=None, gender_col=None, enable_search=False, autofill_from_users=None):
         super().__init__(parent)
         self.load_func = load_func
         self.save_func = save_func
@@ -21,8 +22,14 @@ class TableTab(QWidget):
         self.update_last_changed_col = update_last_changed_col
         self.gender_col = gender_col
         self.enable_search = enable_search
+        self.autofill_from_users = autofill_from_users  # DataFrame of users, or None
         self.df = self.load_func()
         self._block_save = False
+        self._editing_cell = None  # (row, col) tuple if editing
+        self._save_timer = QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.timeout.connect(self._do_save_changes)
+        self._pending_save = False
         self.init_ui()
 
     def init_ui(self):
@@ -38,7 +45,6 @@ class TableTab(QWidget):
             layout.addLayout(search_layout)
         self.table = QTableWidget()
         self.table.setColumnCount(len(self.columns))
-        # Fejlécek sortöréssel
         wrapped_headers = [self.wrap_header(col) for col in self.columns]
         self.table.setHorizontalHeaderLabels(wrapped_headers)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
@@ -53,6 +59,9 @@ class TableTab(QWidget):
         self.setLayout(layout)
 
         self.table.itemChanged.connect(self.on_item_changed)
+        self.table.cellActivated.connect(self.on_cell_activated)
+        self.table.cellDoubleClicked.connect(self.on_cell_activated)
+        self.table.itemSelectionChanged.connect(self.on_selection_changed)
 
     def wrap_header(self, text, max_len=10):
         # Egyszerű sortörés: max_len karakternél vág, szóköznél vagy _ után is törhet
@@ -90,6 +99,66 @@ class TableTab(QWidget):
         self.table.insertRow(row_pos)
         for col in range(self.table.columnCount()):
             self.table.setItem(row_pos, col, QTableWidgetItem(""))
+        # Ha autofill_from_users aktív, csak az első cella (Versenyengedelyszam) legyen szerkeszthető, a többi zárolt
+        if self.autofill_from_users:
+            for col in range(1, self.table.columnCount()):
+                item = self.table.item(row_pos, col)
+                if item:
+                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            # Figyeljük az első cella szerkesztését
+            self.table.itemChanged.connect(self.on_autofill_item_changed)
+
+    def on_autofill_item_changed(self, item):
+        # Csak akkor fut, ha autofill_from_users aktív
+        if self._block_save:
+            return
+        row = item.row()
+        col = item.column()
+        if row != self.table.rowCount() - 1 or col != 0:
+            return  # Csak az új sor első cellájára reagálunk
+        versenyengedelyszam = item.text().strip()
+        if not versenyengedelyszam:
+            return
+        # Keresés a felhasználók között
+        users_df = self.autofill_from_users()
+        match = users_df[users_df["Versenyengedelyszam"].astype(str) == versenyengedelyszam]
+        if not match.empty:
+            user_row = match.iloc[0]
+            # Töltsük ki az ismert adatokat
+            for col_idx, col_name in enumerate(self.columns):
+                if col_idx == 0:
+                    continue  # Az első cella már ki van töltve
+                if col_name in user_row:
+                    value = "" if pd.isna(user_row[col_name]) else str(user_row[col_name])
+                    self._block_save = True
+                    self.table.setItem(row, col_idx, QTableWidgetItem(value))
+                    self._block_save = False
+            # Most már szerkeszthetővé tesszük a többi cellát is
+            for col_idx in range(1, self.table.columnCount()):
+                item2 = self.table.item(row, col_idx)
+                if item2:
+                    item2.setFlags(item2.flags() | Qt.ItemFlag.ItemIsEditable)
+        # Leválasztjuk ezt a handler-t, hogy csak az új sor első cellájára hasson
+        self.table.itemChanged.disconnect(self.on_autofill_item_changed)
+
+    def on_cell_activated(self, row, col):
+        # Ha szerkesztés indul, állítsuk a szöveg színét a kijelölt cella háttérszínére
+        item = self.table.item(row, col)
+        if item:
+            # A kiválasztott cella háttérszíne
+            sel_bg_color = self.table.palette().color(self.table.palette().ColorRole.Highlight)
+            item.setForeground(sel_bg_color)
+            self._editing_cell = (row, col)
+
+    def on_selection_changed(self):
+        # Ha elhagyjuk a szerkesztett cellát, visszaállítjuk a szöveg színét az alapértelmezettre
+        if self._editing_cell:
+            row, col = self._editing_cell
+            item = self.table.item(row, col)
+            if item:
+                default_color = self.table.palette().color(self.table.foregroundRole())
+                item.setForeground(default_color)
+            self._editing_cell = None
 
     def on_item_changed(self, item):
         if self._block_save:
@@ -114,7 +183,6 @@ class TableTab(QWidget):
                     "A Gender mező csak M=Male vagy F=Female lehet!\nEgyéb gendert a rendszer nem kezel."
                 )
                 self._block_save = True
-                # Állítsuk vissza az előző értéket (vagy üresre)
                 prev_val = self.df.iloc[row][col_name] if row < len(self.df) else ""
                 if pd.isna(prev_val):
                     prev_val = ""
@@ -132,7 +200,29 @@ class TableTab(QWidget):
             self.table.blockSignals(True)
             self.table.setItem(row, last_changed_idx, QTableWidgetItem(now))
             self.table.blockSignals(False)
+        self.schedule_save_changes()
+        # Mentés után a szerkesztett cella színét is visszaállítjuk alapértelmezettre
+        if self._editing_cell:
+            row, col = self._editing_cell
+            item = self.table.item(row, col)
+            if item:
+                default_color = self.table.palette().color(self.table.foregroundRole())
+                item.setForeground(default_color)
+            self._editing_cell = None
+
+    def schedule_save_changes(self):
+        if self._save_timer.isActive():
+            self._pending_save = True
+            # Timer már fut, csak jelezzük, hogy újabb mentés szükséges
+        else:
+            self._pending_save = False
+            self._save_timer.start(10000)  # 10 másodperc
+
+    def _do_save_changes(self):
         self.save_changes()
+        if self._pending_save:
+            self._pending_save = False
+            self._save_timer.start(10000)  # újabb 10 másodperc, ha közben volt változás
 
     def save_changes(self):
         rows = self.table.rowCount()
@@ -149,15 +239,17 @@ class TableTab(QWidget):
         self.save_func(df_new)
 
     def on_search(self, text):
-        # Szűrés: minden cella minden sorban, kis/nagybetűtől függetlenül, részszövegre
+        # Gyors keresés: csak a megadott oszlopokban keres
         search = text.strip().lower()
         if not search:
             self.load_data()
             return
-        mask = self.df.apply(
-            lambda row: any(search in str(val).lower() for val in row.values),
-            axis=1
-        )
+        # Csak ezekben az oszlopokban keresünk
+        search_cols = ["Versenyengedelyszam", "Name", "Phone number", "Email"]
+        # Ellenőrizzük, hogy ezek az oszlopok léteznek-e
+        valid_cols = [col for col in search_cols if col in self.df.columns]
+        arr = self.df[valid_cols].fillna("").astype(str).values
+        mask = [any(search in cell.lower() for cell in row) for row in arr]
         filtered_df = self.df[mask].reset_index(drop=True)
         self.load_data(filtered_df=filtered_df)
 
@@ -175,7 +267,12 @@ class MainWindow(QWidget):
             gender_col="Gender",
             enable_search=True
         ), "Felhasználók")
-        tabs.addTab(TableTab(load_eredmeny_db, save_eredmeny_db, EREDMENY_COLUMNS), "Eredmények")
+        # Eredmények tab: kereső és autofill a felhasználókból
+        tabs.addTab(TableTab(
+            load_eredmeny_db, save_eredmeny_db, EREDMENY_COLUMNS,
+            enable_search=True,
+            autofill_from_users=load_db
+        ), "Eredmények")
         tabs.addTab(TableTab(load_versenyek_db, save_versenyek_db, VERSENYEK_COLUMNS), "Versenyek")
         layout.addWidget(tabs)
         self.setLayout(layout)
@@ -184,4 +281,5 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     mw = MainWindow()
     mw.show()
+    sys.exit(app.exec())
     sys.exit(app.exec())
