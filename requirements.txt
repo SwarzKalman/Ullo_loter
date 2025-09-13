@@ -2,4 +2,5 @@ flask
 pyqt5
 pandas
 openpyxl
+PyQt6
 # ...ide jöhetnek további csomagok...
