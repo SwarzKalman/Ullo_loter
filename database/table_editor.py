@@ -30,6 +30,7 @@ class TableTab(QWidget):
         self._save_timer.setSingleShot(True)
         self._save_timer.timeout.connect(self._do_save_changes)
         self._pending_save = False
+        self._last_value = None  # (row, col, value) for edit tracking
         self.init_ui()
 
     def init_ui(self):
@@ -149,6 +150,8 @@ class TableTab(QWidget):
             sel_bg_color = self.table.palette().color(self.table.palette().ColorRole.Highlight)
             item.setForeground(sel_bg_color)
             self._editing_cell = (row, col)
+            # Elmentjük az aktuális értéket, hogy össze tudjuk hasonlítani mentéskor
+            self._last_value = (row, col, item.text())
 
     def on_selection_changed(self):
         # Ha elhagyjuk a szerkesztett cellát, visszaállítjuk a szöveg színét az alapértelmezettre
@@ -193,13 +196,19 @@ class TableTab(QWidget):
             self.table.setItem(row, col, QTableWidgetItem(val))
             self._block_save = False
 
-        # Ha Felhasználók tab és nem a Last_changed oszlop, akkor frissítsük Last_changed-et
+        # Csak akkor frissítsük Last_changed-et, ha ténylegesen változott az érték
+        update_last_changed = True
         if self.update_last_changed_col and col_name != self.update_last_changed_col:
-            last_changed_idx = self.columns.index(self.update_last_changed_col)
-            now = datetime.now().strftime("%Y-%m-%d %H:%M")
-            self.table.blockSignals(True)
-            self.table.setItem(row, last_changed_idx, QTableWidgetItem(now))
-            self.table.blockSignals(False)
+            if self._last_value and (self._last_value[0], self._last_value[1]) == (row, col):
+                prev_text = self._last_value[2]
+                if prev_text == item.text():
+                    update_last_changed = False
+            if update_last_changed:
+                last_changed_idx = self.columns.index(self.update_last_changed_col)
+                now = datetime.now().strftime("%Y-%m-%d %H:%M")
+                self.table.blockSignals(True)
+                self.table.setItem(row, last_changed_idx, QTableWidgetItem(now))
+                self.table.blockSignals(False)
         self.schedule_save_changes()
         # Mentés után a szerkesztett cella színét is visszaállítjuk alapértelmezettre
         if self._editing_cell:
@@ -209,6 +218,7 @@ class TableTab(QWidget):
                 default_color = self.table.palette().color(self.table.foregroundRole())
                 item.setForeground(default_color)
             self._editing_cell = None
+        self._last_value = None
 
     def schedule_save_changes(self):
         if self._save_timer.isActive():
