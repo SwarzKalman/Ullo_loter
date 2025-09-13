@@ -31,6 +31,9 @@ class TableTab(QWidget):
         self._save_timer.timeout.connect(self._do_save_changes)
         self._pending_save = False
         self._last_value = None  # (row, col, value) for edit tracking
+        self._pending_label = QLabel("")
+        self._pending_label.setStyleSheet("color: orange; font-weight: bold;")
+        self._pending_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.init_ui()
 
     def init_ui(self):
@@ -58,6 +61,12 @@ class TableTab(QWidget):
         btn_layout.addWidget(add_btn)
         layout.addLayout(btn_layout)
         self.setLayout(layout)
+
+        # Pending save label a jobb felső sarokban
+        pending_layout = QHBoxLayout()
+        pending_layout.addStretch()
+        pending_layout.addWidget(self._pending_label)
+        layout.addLayout(pending_layout)
 
         self.table.itemChanged.connect(self.on_item_changed)
         self.table.cellActivated.connect(self.on_cell_activated)
@@ -199,10 +208,16 @@ class TableTab(QWidget):
         # Csak akkor frissítsük Last_changed-et, ha ténylegesen változott az érték
         update_last_changed = True
         if self.update_last_changed_col and col_name != self.update_last_changed_col:
-            if self._last_value and (self._last_value[0], self._last_value[1]) == (row, col):
-                prev_text = self._last_value[2]
-                if prev_text == item.text():
-                    update_last_changed = False
+            # Az aktuális értéket a DataFrame-ből olvassuk ki, nem a _last_value-ból
+            prev_val = ""
+            if row < len(self.df):
+                prev_val = self.df.iloc[row][col_name]
+                if pd.isna(prev_val):
+                    prev_val = ""
+                else:
+                    prev_val = str(prev_val)
+            if prev_val == item.text():
+                update_last_changed = False
             if update_last_changed:
                 last_changed_idx = self.columns.index(self.update_last_changed_col)
                 now = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -223,16 +238,20 @@ class TableTab(QWidget):
     def schedule_save_changes(self):
         if self._save_timer.isActive():
             self._pending_save = True
-            # Timer már fut, csak jelezzük, hogy újabb mentés szükséges
+            self._pending_label.setText("Mentésre vár…")
         else:
             self._pending_save = False
+            self._pending_label.setText("")
             self._save_timer.start(10000)  # 10 másodperc
 
     def _do_save_changes(self):
         self.save_changes()
         if self._pending_save:
             self._pending_save = False
+            self._pending_label.setText("")
             self._save_timer.start(10000)  # újabb 10 másodperc, ha közben volt változás
+        else:
+            self._pending_label.setText("")
 
     def save_changes(self):
         rows = self.table.rowCount()
