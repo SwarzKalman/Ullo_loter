@@ -1,4 +1,4 @@
-import pandas as pd
+mimport pandas as pd
 import os
 from datetime import datetime
 
@@ -51,9 +51,12 @@ VERSENYEK_COLUMNS = [
 ]
 VERSENYEK_DB_FILE = os.path.join(DB_DIR, "versenyekDB.xlsx")
 
-def load_db():
+def _ensure_dir():
     if not os.path.exists(DB_DIR):
         os.makedirs(DB_DIR)
+
+def load_db():
+    _ensure_dir()
     if not os.path.exists(DB_FILE):
         df = pd.DataFrame(columns=COLUMNS)
         df.to_excel(DB_FILE, index=False)
@@ -66,17 +69,43 @@ def load_db():
             df = df.rename(columns={"ID": "Versenyengedelyszam"})
         if "Egyesület" in df.columns:
             df = df.rename(columns={"Egyesület": "Egyesulet"})
-        if "Egyesulet" not in df.columns:
-            df.insert(df.columns.get_loc("Name") + 1, "Egyesulet", "")
+        # Ensure required columns exist
+        for col in COLUMNS:
+            if col not in df.columns:
+                # try to insert after Name if possible
+                if "Name" in df.columns:
+                    insert_pos = df.columns.get_loc("Name") + 1
+                    df.insert(insert_pos, col, "")
+                else:
+                    df[col] = ""
+        # Normalize Versenyengedelyszam to string to make merges predictable
+        df["Versenyengedelyszam"] = df["Versenyengedelyszam"].fillna("").astype(str)
+        # Ensure Comment exists
         if "Comment" not in df.columns:
             df["Comment"] = ""
     return df
 
 def save_db(df):
+    _ensure_dir()
+    # Save a backup before overwriting to avoid accidental data loss
+    if os.path.exists(DB_FILE):
+        try:
+            bak = DB_FILE + ".bak"
+            df_existing = pd.read_excel(DB_FILE)
+            df_existing.to_excel(bak, index=False)
+        except Exception:
+            # ignore backup errors
+            pass
     df.to_excel(DB_FILE, index=False)
 
 def add_entry(df, name, egyesulet, gender, birth, phone, email, comment=""):
-    new_id = (df["Versenyengedelyszam"].max() + 1) if not df.empty else 1
+    # Generate a numeric new id robustly even if existing IDs are strings
+    if "Versenyengedelyszam" in df.columns and not df["Versenyengedelyszam"].astype(str).replace("", "0").empty:
+        # coerce to numeric, ignore non-numeric
+        nums = pd.to_numeric(df["Versenyengedelyszam"], errors='coerce').fillna(0).astype(int)
+        new_id = int(nums.max()) + 1 if not nums.empty else 1
+    else:
+        new_id = 1
     now = datetime.now().isoformat()
     new_row = {
         "Versenyengedelyszam": new_id,
@@ -95,8 +124,7 @@ def add_entry(df, name, egyesulet, gender, birth, phone, email, comment=""):
 
 # ÚJ: Verseny eredmények adatbázis kezelése
 def load_eredmeny_db():
-    if not os.path.exists(DB_DIR):
-        os.makedirs(DB_DIR)
+    _ensure_dir()
     if not os.path.exists(EREDMENY_DB_FILE):
         df = pd.DataFrame(columns=EREDMENY_COLUMNS)
         df.to_excel(EREDMENY_DB_FILE, index=False)
@@ -109,12 +137,12 @@ def load_eredmeny_db():
     return df
 
 def save_eredmeny_db(df):
+    _ensure_dir()
     df.to_excel(EREDMENY_DB_FILE, index=False)
 
 # ÚJ: Versenyek adatbázis kezelése
 def load_versenyek_db():
-    if not os.path.exists(DB_DIR):
-        os.makedirs(DB_DIR)
+    _ensure_dir()
     if not os.path.exists(VERSENYEK_DB_FILE):
         df = pd.DataFrame(columns=VERSENYEK_COLUMNS)
         df.to_excel(VERSENYEK_DB_FILE, index=False)
@@ -126,12 +154,12 @@ def load_versenyek_db():
     return df
 
 def save_versenyek_db(df):
+    _ensure_dir()
     df.to_excel(VERSENYEK_DB_FILE, index=False)
 
 # Példa használat:
 if __name__ == "__main__":
     df = load_db()
-    #df = add_entry(df, "Teszt Elek", "Teszt Egyesület", "M", "1990-01-01", "+3612345678", "teszt@valami.hu", "Megjegyzés")
     print(df)
     eredmeny_df = load_eredmeny_db()
     print(eredmeny_df)
