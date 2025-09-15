@@ -115,14 +115,11 @@ class PandasTableModel(QAbstractTableModel):
     # --------- segéd: ID normalizálás (pl. 123.0 -> 123)
     def _normalize_id_like(self, col_name: str, value) -> str:
         if col_name not in self.id_like_cols:
-            # nincs speciális normalizálás
             if value is None or (isinstance(value, float) and pd.isna(value)):
                 return ""
             return str(value)
-        # id-like mező: fejezzük le a .0-t és az értelmetlen whitespace-t
         if value is None or (isinstance(value, float) and pd.isna(value)):
             return ""
-        # szám -> int ha egész
         if isinstance(value, (int, )):
             return str(value)
         if isinstance(value, float):
@@ -133,6 +130,17 @@ class PandasTableModel(QAbstractTableModel):
         if s.endswith(".0"):
             s = s[:-2]
         return s
+
+    def is_row_empty(self, r: int) -> bool:
+        """Igaz, ha a sor minden mezője üres (normalizálva)."""
+        if r < 0 or r >= len(self.df):
+            return True
+        for c, col in enumerate(self.columns):
+            v = self.df.iat[r, c]
+            s = self._normalize_id_like(col, v).strip()
+            if s:
+                return False
+        return True
 
     def rowCount(self, parent=QModelIndex()):
         return len(self.df)
@@ -149,7 +157,6 @@ class PandasTableModel(QAbstractTableModel):
         if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole):
             if pd.isna(value):
                 return ""
-            # ID-like oszlopokra speciális megjelenítés
             return self._normalize_id_like(col_name, value)
         return None
 
@@ -173,7 +180,6 @@ class PandasTableModel(QAbstractTableModel):
 
         # Bemenet normalizálása
         new_val_raw = "" if value is None else value
-        # ID-like oszlop esetén normalizált stringet tárolunk
         new_val = self._normalize_id_like(col_name, new_val_raw)
 
         # Gender validáció
@@ -197,10 +203,8 @@ class PandasTableModel(QAbstractTableModel):
         # Duplikáció tiltása (unique (A,B) pár)
         if self.unique_pair_cols is not None and col_name in self.unique_pair_cols:
             a_col, b_col = self.unique_pair_cols
-            # A és B aktuális/új értékei
             a_val = new_val if col_name == a_col else self._normalize_id_like(a_col, self.df.at[r, a_col] if a_col in self.df.columns else "")
             b_val = new_val if col_name == b_col else self._normalize_id_like(b_col, self.df.at[r, b_col] if b_col in self.df.columns else "")
-            # Keressük, van-e másik sor ugyanezzel a párral
             if a_col in self.df.columns and b_col in self.df.columns:
                 mask = (self.df.index != r) & (self.df[a_col].astype(str).map(lambda x: self._normalize_id_like(a_col, x)) == a_val) & \
                        (self.df[b_col].astype(str).map(lambda x: self._normalize_id_like(b_col, x)) == b_val)
@@ -251,7 +255,6 @@ class PandasTableModel(QAbstractTableModel):
         try:
             cols = [cname for cname in self._search_cols_default if cname in self.df.columns]
             joined = " ".join("" if pd.isna(self.df.at[r, cname]) else str(self.df.at[r, cname]) for cname in cols).lower()
-            # ha id-like, akkor az is normalizáltan legyen a blobban
             for cname in cols:
                 if cname in self.id_like_cols:
                     joined = joined.replace(str(self.df.at[r, cname]), self._normalize_id_like(cname, self.df.at[r, cname]))
@@ -277,6 +280,19 @@ class PandasTableModel(QAbstractTableModel):
             self._rebuild_search_blob()
         return True
 
+    def removeRows(self, row: int, count: int, parent=QModelIndex()):
+        if count <= 0 or row < 0 or row + count > len(self.df):
+            return False
+        self.beginRemoveRows(QModelIndex(), row, row + count - 1)
+        idx = list(range(row, row + count))
+        self.df = self.df.drop(index=idx).reset_index(drop=True)
+        try:
+            self._search_blob = self._search_blob.drop(index=idx).reset_index(drop=True)
+        except Exception:
+            self._rebuild_search_blob()
+        self.endRemoveRows()
+        return True
+
     def _wrap_header(self, text, max_len=10):
         words, current = [], ""
         for c in text:
@@ -292,14 +308,13 @@ class PandasTableModel(QAbstractTableModel):
         try:
             cols = [c for c in self._search_cols_default if c in self.df.columns]
             if cols:
-                # Normalizált string aggregátum
                 def norm_series(col):
                     if col in self.id_like_cols:
                         return self.df[col].apply(lambda v: self._normalize_id_like(col, v))
                     return self.df[col].fillna("").astype(str)
                 parts = [norm_series(c) for c in cols]
                 tmp = pd.concat(parts, axis=1)
-                self._search_blob = tmp.fillna("").astype(str).agg(" ".join, axis=1).str.lower()
+                self._search_blob = tmp.fillna("").astype[str].agg(" ".join, axis=1).str.lower()
             else:
                 self._search_blob = pd.Series([""] * len(self.df), index=self.df.index)
         except Exception:
@@ -313,7 +328,8 @@ class SearchFilterProxy(QSortFilterProxyModel):
     - AND logika több szó esetén
     - Kis/nagybetűtől független
     - Sorlimit: csak az első N találatot engedi át (gyors üres keresésnél is)
-    - Teljes találatszám követése, hogy a UI eldönthesse: kell-e "További találatok…" gomb
+    - Teljes találatszám követése
+    - FIX: az utolsó, üres sor mindig látszódjon
     """
     def __init__(self, source_model: PandasTableModel, row_limit: int = 500, parent=None):
         super().__init__(parent)
@@ -354,8 +370,23 @@ class SearchFilterProxy(QSortFilterProxyModel):
     def filterAcceptsRow(self, source_row: int, source_parent: QModelIndex):
         model: PandasTableModel = self.sourceModel()  # type: ignore
 
+        # Mindig engedjük át AZ UTOLSÓ üres sort (placeholdert),
+        # de ne növelje a találati számlálót és ne számítson limitbe.
+        try:
+            is_last_row = (source_row == model.rowCount() - 1)
+            if is_last_row and model.is_row_empty(source_row):
+                return True
+        except Exception:
+            pass
+
+        # Egyéb üres sorokat rejtsük el
+        try:
+            if model.is_row_empty(source_row):
+                return False
+        except Exception:
+            return False
+
         if not self._text:
-            # üres kereső: minden sor találat -> számoljuk
             self._matched_total += 1
             if self._accepted_so_far >= self._row_limit:
                 return False
@@ -383,8 +414,10 @@ class SearchFilterProxy(QSortFilterProxyModel):
 # --------------------------
 
 class TableTab(QWidget):
-    def __init__(self, load_func, save_func, columns, parent=None, update_last_changed_col=None, gender_col=None, enable_search=False, autofill_from_users=None, versenyid_selector=None,
-                 unique_pair_cols: tuple[str, str] | None = None, id_like_cols: list[str] | None = None):
+    def __init__(self, load_func, save_func, columns, parent=None, update_last_changed_col=None, gender_col=None,
+                 enable_search=False, autofill_from_users=None, versenyid_selector=None,
+                 unique_pair_cols: tuple[str, str] | None = None, id_like_cols: list[str] | None = None,
+                 allow_sorting: bool = True, show_add_button: bool = True, hide_add_button: bool = False):
         super().__init__(parent)
         self.load_func = load_func
         self.save_func = save_func
@@ -397,6 +430,8 @@ class TableTab(QWidget):
         self.selected_versenyid = None
         self.unique_pair_cols = unique_pair_cols
         self.id_like_cols = id_like_cols or []
+        self.allow_sorting = allow_sorting
+        self._show_add_button = show_add_button and not hide_add_button
 
         # Async save state
         self._save_timer = QTimer(self)
@@ -405,6 +440,9 @@ class TableTab(QWidget):
         self._pending_label = QLabel("")
         self._pending_label.setStyleSheet("color: orange; font-weight: bold;")
         self._pending_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self._count_label = QLabel("")  # bal alsó számláló
+        self._count_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+
         self._pending_save = False
         self._save_in_progress = False
         self._thread = None
@@ -436,7 +474,7 @@ class TableTab(QWidget):
             search_layout.addWidget(self.search_edit)
             layout.addLayout(search_layout)
 
-        # VersenyID selector csak az eredmények tabon
+        # VersenyID selector csak az eredmények tabon (ha van)
         if self.versenyid_selector:
             versenyid_layout = QHBoxLayout()
             versenyid_label = QLabel("Verseny_ID:")
@@ -459,71 +497,133 @@ class TableTab(QWidget):
         )
         self.proxy = SearchFilterProxy(self.model, row_limit=500)
 
+        # Mindig tartsunk egy üres sort a végén
+        self._ensure_trailing_empty_row()
+
         # View
         self.view = QTableView()
         self.view.setModel(self.proxy)
         self.view.setAlternatingRowColors(True)
-        self.view.setSortingEnabled(True)
+        self.view.setSortingEnabled(self.allow_sorting)
+        if not self.allow_sorting:
+            try:
+                self.view.horizontalHeader().setSortIndicatorShown(False)
+            except Exception:
+                pass
         self.view.horizontalHeader().setStretchLastSection(False)
         self.view.horizontalHeader().setDefaultSectionSize(150)
         layout.addWidget(self.view)
 
         # Gombok
         btn_layout = QHBoxLayout()
-        add_btn = QPushButton("Új sor hozzáadása")
-        add_btn.clicked.connect(self.add_row)
-        btn_layout.addWidget(add_btn)
+        if self._show_add_button:
+            add_btn = QPushButton("Új sor hozzáadása")
+            add_btn.clicked.connect(self.add_row)
+            btn_layout.addWidget(add_btn)
 
-        # "További találatok…" gomb – csak akkor látszik, ha van több találat, mint a megjelenített
+        # "További találatok…" gomb
         self.more_btn = QPushButton("További találatok…")
         def _more():
             self.proxy.setRowLimit(self.proxy.currentRowLimit() + 1000)
             self._update_more_button_visibility()
+            self._update_count_label()
             self.view.scrollToBottom()
         self.more_btn.clicked.connect(_more)
         btn_layout.addWidget(self.more_btn)
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
 
-        # Pending save label a jobb felső sarokban
-        pending_layout = QHBoxLayout()
-        pending_layout.addStretch()
-        pending_layout.addWidget(self._pending_label)
-        layout.addLayout(pending_layout)
+        # Alsó státusz: balra count, jobbra mentés állapot
+        status_layout = QHBoxLayout()
+        status_layout.addWidget(self._count_label)
+        status_layout.addStretch()
+        status_layout.addWidget(self._pending_label)
+        layout.addLayout(status_layout)
 
         self.setLayout(layout)
 
-        # Események a mentés időzítéséhez
-        self.model.dataChanged.connect(lambda *_: self.schedule_save_changes())
-        self.model.rowsInserted.connect(lambda *_: self.schedule_save_changes())
+        # Események
+        self.model.dataChanged.connect(self._on_model_data_changed)
+        self.model.rowsInserted.connect(lambda *_: (self.schedule_save_changes(), self._update_more_button_visibility(), self._update_count_label()))
+        self.model.rowsRemoved.connect(lambda *_: (self.schedule_save_changes(), self._update_more_button_visibility(), self._update_count_label()))
 
-        # A gomb láthatóságának frissítése minden releváns változásnál
-        self.proxy.layoutChanged.connect(self._update_more_button_visibility)
-        self.proxy.modelReset.connect(self._update_more_button_visibility)
-        self.proxy.rowsInserted.connect(self._update_more_button_visibility)
-        self.proxy.rowsRemoved.connect(self._update_more_button_visibility)
+        self.proxy.layoutChanged.connect(lambda *_: (self._update_more_button_visibility(), self._update_count_label()))
+        self.proxy.modelReset.connect(lambda *_: (self._update_more_button_visibility(), self._update_count_label()))
+        self.proxy.rowsInserted.connect(lambda *_: (self._update_more_button_visibility(), self._update_count_label()))
+        self.proxy.rowsRemoved.connect(lambda *_: (self._update_more_button_visibility(), self._update_count_label()))
 
-        # Keresés debounce – bármennyi karakterre szűr
         if self.enable_search:
             self._search_timer = QTimer(self)
             self._search_timer.setSingleShot(True)
             def _apply_filter():
                 self.proxy.setFilterText(self.search_edit.text())
                 self._update_more_button_visibility()
+                self._update_count_label()
             self._search_timer.timeout.connect(_apply_filter)
             self.search_edit.textChanged.connect(lambda _: self._search_timer.start(120))
 
-        # első láthatóság beállítása
+        # induló állapot
         self._update_more_button_visibility()
+        self._update_count_label()
 
+    # ===== ÜRES SOR MENEDZSMENT =====
+    def _ensure_trailing_empty_row(self):
+        """Legyen pontosan 1 üres sor a végén."""
+        if self.model.rowCount() == 0:
+            self.model.insertRows(0, 1)
+            return
+        last = self.model.rowCount() - 1
+        if not self.model.is_row_empty(last):
+            self.model.insertRows(self.model.rowCount(), 1)
+            return
+        if self.model.rowCount() >= 2:
+            prev = self.model.rowCount() - 2
+            if self.model.is_row_empty(prev) and self.model.is_row_empty(last):
+                self.model.removeRows(last, 1)
+
+    def _on_model_data_changed(self, top_left: QModelIndex, bottom_right: QModelIndex, roles):
+        # mentés ütemezés
+        self.schedule_save_changes()
+        # ha az utolsó sorba írtak -> adjunk új üres sort
+        try:
+            last = self.model.rowCount() - 1
+            if top_left.row() <= last <= bottom_right.row():
+                if not self.model.is_row_empty(last):
+                    self.model.insertRows(self.model.rowCount(), 1)
+                self._ensure_trailing_empty_row()
+        except Exception:
+            pass
+        self._update_more_button_visibility()
+        self._update_count_label()
+
+    # ===== COUNT LABEL =====
+    def _nonempty_total_count(self) -> int:
+        n = 0
+        for r in range(self.model.rowCount()):
+            if not self.model.is_row_empty(r):
+                n += 1
+        return n
+
+    def _nonempty_visible_count(self) -> int:
+        n = 0
+        for pr in range(self.proxy.rowCount()):
+            src_idx = self.proxy.mapToSource(self.proxy.index(pr, 0))
+            if src_idx.isValid() and not self.model.is_row_empty(src_idx.row()):
+                n += 1
+        return n
+
+    def _update_count_label(self):
+        x = self._nonempty_visible_count()
+        y = self._nonempty_total_count()
+        self._count_label.setText(f"Jelenleg {x} betöltve az {y} (összes) rekordból.")
+
+    # ===== UI gombok & viselkedés =====
     def _update_more_button_visibility(self):
         try:
             total = self.proxy.matchedTotal()
             shown = self.proxy.rowCount()
-            # akkor mutassuk, ha van több találat, mint amennyit most mutatunk
             self.more_btn.setVisible(shown < total)
         except Exception:
-            # hiba esetén ne zavarjuk a UI-t
             self.more_btn.setVisible(False)
 
     def on_versenyid_changed(self, idx):
@@ -540,7 +640,9 @@ class TableTab(QWidget):
         proxy_row = self.proxy.mapFromSource(self.model.index(insert_at, 0)).row()
         if proxy_row >= 0:
             self.view.scrollTo(self.proxy.index(proxy_row, 0))
+        self._ensure_trailing_empty_row()
         self._update_more_button_visibility()
+        self._update_count_label()
 
     # ---- Mentési logika
     def schedule_save_changes(self):
@@ -555,8 +657,22 @@ class TableTab(QWidget):
     def _do_save_changes(self):
         self.save_changes()
 
-    def _snapshot_df(self):
-        return self.model.df.copy()
+    def _snapshot_df(self) -> pd.DataFrame:
+        """Mentéshez: csak a nem-üres sorok kerüljenek a fájlba."""
+        df = self.model.df.copy()
+        mask_nonempty = []
+        for r in range(len(df)):
+            row_empty = True
+            for c, col in enumerate(self.columns):
+                v = df.iat[r, c]
+                s = "" if pd.isna(v) else str(v).strip()
+                if s:
+                    row_empty = False
+                    break
+            mask_nonempty.append(not row_empty)
+        if mask_nonempty:
+            df = df[pd.Series(mask_nonempty)].reset_index(drop=True)
+        return df
 
     def _start_async_save(self, df):
         if self._save_in_progress:
@@ -622,7 +738,7 @@ class TableTab(QWidget):
             while self._save_in_progress and (time.time() - t0) < (timeout_ms / 1000.0):
                 QApplication.processEvents()
                 time.sleep(0.05)
-            df_new = self.model.df.copy()
+            df_new = self._snapshot_df()
             try:
                 self.save_func(df_new)
             except Exception:
@@ -642,19 +758,21 @@ class MainWindow(QWidget):
         layout = QVBoxLayout()
         tabs = QTabWidget()
 
-        # Felhasználók tab: Last_changed automatikus frissítés, Gender validáció, kereső
+        # Felhasználók tab: NEM rendezhető, automatikus üres sor, nincs "Új sor" gomb
         self.users_tab = TableTab(
             load_db, save_db, COLUMNS,
             update_last_changed_col="Last_changed",
             gender_col="Gender",
             enable_search=True,
-            # A felhasználók táblánál nincs egyedi (A,B) kulcs-ellenőrzés, és nem kell ID-normalizálás
             unique_pair_cols=None,
-            id_like_cols=[]
+            id_like_cols=[],
+            allow_sorting=False,
+            show_add_button=False,
+            hide_add_button=True
         )
         tabs.addTab(self.users_tab, "Felhasználók")
 
-        # Eredmények tab: kereső, autofill, versenyID selector, egyedi kulcspár + ID-normalizálás
+        # Eredmények tab: NEM rendezhető, automatikus üres sor, nincs "Új sor" gomb
         if "Kategoria" not in EREDMENY_COLUMNS:
             EREDMENY_COLUMNS.append("Kategoria")
         try:
@@ -671,18 +789,22 @@ class MainWindow(QWidget):
             enable_search=True,
             autofill_from_users=load_db,
             versenyid_selector=versenyid_selector,
-            # Egyediség: (Verseny_ID, Versenyengedelyszam) pár
             unique_pair_cols=("Verseny_ID", "Versenyengedelyszam"),
-            # ID-like oszlop: Versenyengedelyszam -> ne legyen .0
-            id_like_cols=["Versenyengedelyszam"]
+            id_like_cols=["Versenyengedelyszam"],
+            allow_sorting=False,
+            show_add_button=False,
+            hide_add_button=True
         )
         tabs.addTab(self.eredmeny_tab, "Eredmények")
 
+        # Versenyek tab: rendezés maradhat, gomb maradhat
         self.versenyek_tab = TableTab(
             load_versenyek_db, save_versenyek_db, VERSENYEK_COLUMNS,
             enable_search=False,
             unique_pair_cols=None,
-            id_like_cols=[]
+            id_like_cols=[],
+            allow_sorting=True,
+            show_add_button=True
         )
         tabs.addTab(self.versenyek_tab, "Versenyek")
 

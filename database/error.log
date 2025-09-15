@@ -12,3 +12,19 @@ Traceback (most recent call last):
 PermissionError: [WinError 5] Access is denied: 'D:\\nextcloud\\projektek\\gitrepos\\Ullo_loter\\database\\userDB.xlsx.jv_oz4o0.tmp.xlsx' -> 'database\\userDB.xlsx'
 
 
+[2025-09-15 20:54:32] Keresési cache építési hiba
+Traceback (most recent call last):
+  File "d:\nextcloud\projektek\gitrepos\Ullo_loter\database\table_editor.py", line 317, in _rebuild_search_blob
+    self._search_blob = tmp.fillna("").astype[str].agg(" ".join, axis=1).str.lower()
+                        ~~~~~~~~~~~~~~~~~~~~~^^^^^
+TypeError: 'method' object is not subscriptable
+
+
+[2025-09-15 20:54:32] Keresési cache építési hiba
+Traceback (most recent call last):
+  File "d:\nextcloud\projektek\gitrepos\Ullo_loter\database\table_editor.py", line 317, in _rebuild_search_blob
+    self._search_blob = tmp.fillna("").astype[str].agg(" ".join, axis=1).str.lower()
+                        ~~~~~~~~~~~~~~~~~~~~~^^^^^
+TypeError: 'method' object is not subscriptable
+
+
