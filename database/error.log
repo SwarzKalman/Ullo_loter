@@ -1,0 +1,14 @@
+[2025-09-15 19:13:11] Mentési hiba
+Traceback (most recent call last):
+  File "d:\nextcloud\projektek\gitrepos\Ullo_loter\database\table_editor.py", line 68, in run
+    self.save_func(self.df)
+  File "d:\nextcloud\projektek\gitrepos\Ullo_loter\database\pandas_db.py", line 163, in save_db
+    _atomic_write_excel(DB_FILE, df_to_save)
+  File "d:\nextcloud\projektek\gitrepos\Ullo_loter\database\pandas_db.py", line 91, in _atomic_write_excel
+    raise last_exc
+  File "d:\nextcloud\projektek\gitrepos\Ullo_loter\database\pandas_db.py", line 76, in _atomic_write_excel
+    os.replace(tmp_path, path)  # atomic on same filesystem
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+PermissionError: [WinError 5] Access is denied: 'D:\\nextcloud\\projektek\\gitrepos\\Ullo_loter\\database\\userDB.xlsx.jv_oz4o0.tmp.xlsx' -> 'database\\userDB.xlsx'
+
+

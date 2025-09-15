@@ -1,9 +1,12 @@
 import sys
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QTabWidget, QVBoxLayout, QPushButton, QHBoxLayout,
-    QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox, QLineEdit, QLabel, QComboBox
+    QTableView, QMessageBox, QLineEdit, QLabel, QComboBox
 )
-from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QObject
+from PyQt6.QtCore import (
+    Qt, QTimer, QThread, pyqtSignal, QObject, QAbstractTableModel,
+    QModelIndex, QSortFilterProxyModel
+)
 from PyQt6.QtGui import QColor
 import pandas as pd
 from pandas_db import (
@@ -27,7 +30,6 @@ def log_error(msg: str, detail: str = ""):
         with open(path, "a", encoding="utf-8") as f:
             f.write(f"[{ts}] {msg}\n{detail}\n\n")
     except Exception:
-        # Logging hiba esetén sem akadjon meg a program
         pass
 
 
@@ -70,6 +72,238 @@ class SaveWorker(QObject):
             self.finished.emit(False, traceback.format_exc())
 
 
+# --------------------------
+#   Model / Proxy réteg
+# --------------------------
+
+class PandasTableModel(QAbstractTableModel):
+    """
+    QAbstractTableModel pandas DataFrame-hez.
+    - Szerkeszthető
+    - Gender validáció (M/F/üres)
+    - Last_changed automatikus frissítés
+    - Keresési blob karbantartás (gyors szűréshez)
+    - Autofill támogatás (első oszlop beírásakor, ha be van állítva egy users_df loader)
+    """
+    def __init__(self, df: pd.DataFrame, columns: list[str],
+                 update_last_changed_col: str | None = None,
+                 gender_col: str | None = None,
+                 autofill_from_users=None,
+                 on_error=None,
+                 parent=None):
+        super().__init__(parent)
+        self.df = df.copy()
+        for c in columns:
+            if c not in self.df.columns:
+                self.df[c] = ""
+        self.df = self.df[columns]
+        self.columns = columns
+        self.update_last_changed_col = update_last_changed_col
+        self.gender_col = gender_col
+        self.autofill_from_users = autofill_from_users
+        self.on_error = on_error
+        self._search_cols_default = ["Versenyengedelyszam", "Name", "Phone number", "Email", "Egyesulet"]
+        self._rebuild_search_blob()
+
+    def rowCount(self, parent=QModelIndex()):
+        return len(self.df)
+
+    def columnCount(self, parent=QModelIndex()):
+        return len(self.columns)
+
+    def data(self, index: QModelIndex, role=Qt.ItemDataRole.DisplayRole):
+        if not index.isValid():
+            return None
+        r, c = index.row(), index.column()
+        col_name = self.columns[c]
+        value = self.df.iloc[r][col_name] if col_name in self.df.columns else ""
+        if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole):
+            if pd.isna(value):
+                return ""
+            return str(value)
+        return None
+
+    def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
+        if role != Qt.ItemDataRole.DisplayRole:
+            return None
+        if orientation == Qt.Orientation.Horizontal:
+            return self._wrap_header(self.columns[section])
+        return str(section + 1)
+
+    def flags(self, index: QModelIndex):
+        if not index.isValid():
+            return Qt.ItemFlag.NoItemFlags
+        return Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsEditable
+
+    def setData(self, index: QModelIndex, value, role=Qt.ItemDataRole.EditRole):
+        if role != Qt.ItemDataRole.EditRole or not index.isValid():
+            return False
+        r, c = index.row(), index.column()
+        col_name = self.columns[c]
+        new_val = "" if value is None else str(value)
+
+        # Gender validáció
+        if self.gender_col and col_name == self.gender_col:
+            v = new_val.strip()
+            if v.lower() == "m":
+                new_val = "M"
+            elif v.lower() == "f":
+                new_val = "F"
+            elif v == "":
+                new_val = ""
+            else:
+                if self.on_error:
+                    self.on_error("Hibás nem", "A Gender mező csak M=Male vagy F=Female lehet!\nEgyéb gendert a rendszer nem kezel.")
+                return False
+
+        prev_val = "" if pd.isna(self.df.iat[r, c]) else str(self.df.iat[r, c])
+        if prev_val == new_val:
+            return True
+
+        self.df.iat[r, c] = new_val
+
+        # Autofill az első oszlop alapján
+        if self.autofill_from_users and c == 0:
+            key = new_val.strip()
+            if key:
+                try:
+                    users_df = self.autofill_from_users()
+                except Exception:
+                    users_df = pd.DataFrame(columns=["Versenyengedelyszam"])
+                    log_error("Autofill felhasználó betöltési hiba", traceback.format_exc())
+                match = users_df[users_df["Versenyengedelyszam"].astype(str) == key] if "Versenyengedelyszam" in users_df.columns else pd.DataFrame()
+                if not match.empty:
+                    user_row = match.iloc[0]
+                    for col_idx, col_name2 in enumerate(self.columns):
+                        if col_idx == 0:
+                            continue
+                        if col_name2 in user_row:
+                            val2 = "" if pd.isna(user_row[col_name2]) else str(user_row[col_name2])
+                            self.df.iat[r, col_idx] = val2
+                            top_left = self.index(r, col_idx)
+                            self.dataChanged.emit(top_left, top_left, [Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole])
+
+        # Last_changed frissítés
+        if self.update_last_changed_col and col_name != self.update_last_changed_col:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M")
+            if self.update_last_changed_col in self.columns:
+                idx_lc = self.columns.index(self.update_last_changed_col)
+                self.df.iat[r, idx_lc] = now
+                top_left = self.index(r, idx_lc)
+                self.dataChanged.emit(top_left, top_left, [Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole])
+
+        # keresési blob frissítés
+        try:
+            cols = [cname for cname in self._search_cols_default if cname in self.df.columns]
+            joined = " ".join("" if pd.isna(self.df.at[r, cname]) else str(self.df.at[r, cname]) for cname in cols).lower()
+            self._search_blob.iat[r] = joined
+        except Exception:
+            log_error("Keresési cache frissítési hiba", traceback.format_exc())
+
+        self.dataChanged.emit(index, index, [Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole])
+        return True
+
+    def insertRows(self, row: int, count: int, parent=QModelIndex()):
+        if count <= 0:
+            return False
+        self.beginInsertRows(QModelIndex(), row, row + count - 1)
+        for _ in range(count):
+            new_row = {col: "" for col in self.columns}
+            self.df = pd.concat([self.df.iloc[:row], pd.DataFrame([new_row], columns=self.columns), self.df.iloc[row:]], ignore_index=True)
+        self.endInsertRows()
+        try:
+            for _ in range(count):
+                self._search_blob = pd.concat([self._search_blob.iloc[:row], pd.Series([""]), self._search_blob.iloc[row:]], ignore_index=True)
+        except Exception:
+            self._rebuild_search_blob()
+        return True
+
+    def _wrap_header(self, text, max_len=10):
+        words, current = [], ""
+        for c in text:
+            current += c
+            if len(current) >= max_len or c in " _":
+                words.append(current)
+                current = ""
+        if current:
+            words.append(current)
+        return "\n".join(words)
+
+    def _rebuild_search_blob(self):
+        try:
+            cols = [c for c in self._search_cols_default if c in self.df.columns]
+            if cols:
+                self._search_blob = self.df[cols].fillna("").astype(str).agg(" ".join, axis=1).str.lower()
+            else:
+                self._search_blob = pd.Series([""] * len(self.df), index=self.df.index)
+        except Exception:
+            self._search_blob = pd.Series([""] * len(self.df), index=self.df.index)
+            log_error("Keresési cache építési hiba", traceback.format_exc())
+
+
+class SearchFilterProxy(QSortFilterProxyModel):
+    """
+    Teljes sor-szűrés több oszlop összefűzött blobján.
+    - AND logika több szó esetén
+    - Kis/nagybetűtől független
+    - Sorlimit: csak az első N találatot engedi át (gyors üres keresésnél is)
+    """
+    def __init__(self, source_model: PandasTableModel, row_limit: int = 500, parent=None):
+        super().__init__(parent)
+        self._text = ""
+        self._row_limit = int(row_limit)
+        self._accepted_so_far = 0
+        self.setSourceModel(source_model)
+        self.setFilterCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+
+        sm = self.sourceModel()
+        sm.modelReset.connect(self._reset_counter)
+        sm.layoutChanged.connect(self._reset_counter)
+        sm.dataChanged.connect(self._reset_counter)
+        sm.rowsInserted.connect(self._reset_counter)
+        sm.rowsRemoved.connect(self._reset_counter)
+
+    def _reset_counter(self, *args, **kwargs):
+        self._accepted_so_far = 0
+
+    def setRowLimit(self, n: int):
+        self._row_limit = max(1, int(n))
+        self._reset_counter()
+        self.invalidateFilter()
+
+    def currentRowLimit(self) -> int:
+        return self._row_limit
+
+    def setFilterText(self, text: str):
+        self._text = (text or "").strip().lower()
+        self._reset_counter()
+        self.invalidateFilter()
+
+    def filterAcceptsRow(self, source_row: int, source_parent: QModelIndex):
+        if self._accepted_so_far >= self._row_limit:
+            return False
+
+        if not self._text:
+            self._accepted_so_far += 1
+            return True
+
+        model: PandasTableModel = self.sourceModel()  # type: ignore
+        try:
+            row_text = model._search_blob.iat[source_row]
+        except Exception:
+            return False
+
+        terms = [t for t in self._text.split() if t]
+        ok = all(t in row_text for t in terms)
+        if ok:
+            self._accepted_so_far += 1
+        return ok
+
+
+# --------------------------
+#   View + logika (Tabs)
+# --------------------------
+
 class TableTab(QWidget):
     def __init__(self, load_func, save_func, columns, parent=None, update_last_changed_col=None, gender_col=None, enable_search=False, autofill_from_users=None, versenyid_selector=None):
         super().__init__(parent)
@@ -80,39 +314,28 @@ class TableTab(QWidget):
         self.gender_col = gender_col
         self.enable_search = enable_search
         self.autofill_from_users = autofill_from_users  # callable returning DataFrame, or None
-        self._block_save = False
-        self._editing_cell = None  # (row, col) tuple if editing
-        self._save_timer = QTimer(self)
-        self._save_timer.setSingleShot(True)
-        self._save_timer.timeout.connect(self._do_save_changes)
-        self._pending_save = False
-        self._last_value = None  # (row, col, value) for edit tracking
-        self._pending_label = QLabel("")
-        self._pending_label.setStyleSheet("color: orange; font-weight: bold;")
-        self._pending_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.versenyid_selector = versenyid_selector  # QComboBox vagy None
         self.selected_versenyid = None
 
         # Async save state
+        self._save_timer = QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.timeout.connect(self._do_save_changes)
+        self._pending_label = QLabel("")
+        self._pending_label.setStyleSheet("color: orange; font-weight: bold;")
+        self._pending_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self._pending_save = False
         self._save_in_progress = False
         self._thread = None
         self._worker = None
-
-        # Autofill state (track exactly one pending new row to autofill)
-        self._autofill_target_row = None
-
-        # Hiba-pop-up ritkítás
         self._last_error_popup_ts = 0.0
-
-        # Látható sor -> self.df index mapping (szűréshez, szerkesztéshez)
-        self._row_index_map: list[int | None] = []
 
         # Adatok betöltése hibavédelemmel
         try:
-            self.df = self.load_func()
+            df = self.load_func()
         except Exception:
             log_error("Adatbázis betöltési hiba", traceback.format_exc())
-            self.df = pd.DataFrame(columns=self.columns)
+            df = pd.DataFrame(columns=self.columns)
             try:
                 QMessageBox.warning(
                     self,
@@ -122,19 +345,16 @@ class TableTab(QWidget):
             except Exception:
                 pass
 
-        self.init_ui()
-
-    def init_ui(self):
         layout = QVBoxLayout()
         if self.enable_search:
             search_layout = QHBoxLayout()
             search_label = QLabel("Keresés:")
             self.search_edit = QLineEdit()
-            self.search_edit.setPlaceholderText("Írj be keresendő szöveget...")
-            self.search_edit.textChanged.connect(self.on_search)
+            self.search_edit.setPlaceholderText("Írj be keresendő szöveget…")
             search_layout.addWidget(search_label)
             search_layout.addWidget(self.search_edit)
             layout.addLayout(search_layout)
+
         # VersenyID selector csak az eredmények tabon
         if self.versenyid_selector:
             versenyid_layout = QHBoxLayout()
@@ -145,20 +365,42 @@ class TableTab(QWidget):
             layout.addLayout(versenyid_layout)
             self.versenyid_selector.currentIndexChanged.connect(self.on_versenyid_changed)
             self.selected_versenyid = self.versenyid_selector.currentText()
-        self.table = QTableWidget()
-        self.table.setColumnCount(len(self.columns))
-        wrapped_headers = [self.wrap_header(col) for col in self.columns]
-        self.table.setHorizontalHeaderLabels(wrapped_headers)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        self.load_data()
-        layout.addWidget(self.table)
 
+        # Model és Proxy
+        self.model = PandasTableModel(
+            df, self.columns,
+            update_last_changed_col=self.update_last_changed_col,
+            gender_col=self.gender_col,
+            autofill_from_users=self.autofill_from_users,
+            on_error=lambda t, m: QMessageBox.warning(self, t, m)
+        )
+        self.proxy = SearchFilterProxy(self.model, row_limit=500)
+
+        # View
+        self.view = QTableView()
+        self.view.setModel(self.proxy)
+        self.view.setAlternatingRowColors(True)
+        self.view.setSortingEnabled(True)
+        self.view.horizontalHeader().setStretchLastSection(False)
+        self.view.horizontalHeader().setDefaultSectionSize(150)
+        layout.addWidget(self.view)
+
+        # Gombok
         btn_layout = QHBoxLayout()
         add_btn = QPushButton("Új sor hozzáadása")
         add_btn.clicked.connect(self.add_row)
         btn_layout.addWidget(add_btn)
+
+        # "További találatok…" gomb – növeli a limitet dinamikusan
+        more_btn = QPushButton("További találatok…")
+        def _more():
+            self.proxy.setRowLimit(self.proxy.currentRowLimit() + 1000)
+            self.view.scrollToBottom()
+        more_btn.clicked.connect(_more)
+        btn_layout.addWidget(more_btn)
+
+        btn_layout.addStretch()
         layout.addLayout(btn_layout)
-        self.setLayout(layout)
 
         # Pending save label a jobb felső sarokban
         pending_layout = QHBoxLayout()
@@ -166,249 +408,52 @@ class TableTab(QWidget):
         pending_layout.addWidget(self._pending_label)
         layout.addLayout(pending_layout)
 
-        self.table.itemChanged.connect(self.on_item_changed)
-        self.table.cellActivated.connect(self.on_cell_activated)
-        self.table.cellDoubleClicked.connect(self.on_cell_activated)
-        self.table.itemSelectionChanged.connect(self.on_selection_changed)
+        self.setLayout(layout)
 
-    def wrap_header(self, text, max_len=10):
-        # Egyszerű sortörés: max_len karakternél vág, szóköznél vagy _ után is törhet
-        words = []
-        current = ""
-        for c in text:
-            current += c
-            if len(current) >= max_len or c in " _":
-                words.append(current)
-                current = ""
-        if current:
-            words.append(current)
-        return "\n".join(words)
+        # Események a mentés időzítéséhez
+        self.model.dataChanged.connect(lambda *_: self.schedule_save_changes())
+        self.model.rowsInserted.connect(lambda *_: self.schedule_save_changes())
 
-    def load_data(self, filtered_df=None):
-        self._block_save = True
-        if filtered_df is not None:
-            # Szűrt nézet megjelenítése. Feltételezzük, hogy on_search beállította a _row_index_map-et.
-            df = filtered_df
-            if len(self._row_index_map) != len(df):
-                # Biztonsági fallback: identitás hozzárendelés (nem ideális szűrt nézethez, de elkerüli a hibát)
-                self._row_index_map = list(range(len(df)))
-        else:
-            try:
-                self.df = self.load_func()
-            except Exception:
-                log_error("Adatok újratöltési hiba", traceback.format_exc())
-                # maradjon a régi self.df
-            df = self.df
-            # Nem szűrt: identitás hozzárendelés
-            self._row_index_map = list(range(len(df)))
-
-        self.table.setRowCount(len(df))
-        alt_color = QColor(33, 33, 33)  # sötétebb szürke
-        for row in range(len(df)):
-            for col, col_name in enumerate(self.columns):
-                value = df.iloc[row][col_name] if col_name in df.columns else ""
-                if pd.isna(value):
-                    value = ""
-                else:
-                    value = str(value)
-                item = QTableWidgetItem(value)
-                # Minden második sor háttérszínét állítjuk
-                if row % 2 == 1:
-                    item.setBackground(alt_color)
-                self.table.setItem(row, col, item)
-        self._block_save = False
-
-    def _df_index_for_row(self, row: int) -> int:
-        """
-        A látható 'row' táblázatsorhoz visszaadja a self.df indexét.
-        Ha a sor új (nincs hozzárendelve), akkor self.df-hez hozzáad egy üres sort és létrehozza a hozzárendelést.
-        """
-        if 0 <= row < len(self._row_index_map) and self._row_index_map[row] is not None:
-            return int(self._row_index_map[row])  # type: ignore
-        # Új sor: bővítsük a df-et és a map-et
-        new_idx = len(self.df)
-        new_row = {col: "" for col in self.columns}
-        self.df = pd.concat([self.df, pd.DataFrame([new_row])], ignore_index=True)
-        while len(self._row_index_map) <= row:
-            self._row_index_map.append(None)
-        self._row_index_map[row] = new_idx
-        return new_idx
+        # Keresés debounce – bármennyi karakterre szűr
+        if self.enable_search:
+            self._search_timer = QTimer(self)
+            self._search_timer.setSingleShot(True)
+            self._search_timer.timeout.connect(lambda: self.proxy.setFilterText(self.search_edit.text()))
+            self.search_edit.textChanged.connect(lambda _: self._search_timer.start(120))
 
     def on_versenyid_changed(self, idx):
         if self.versenyid_selector:
             self.selected_versenyid = self.versenyid_selector.currentText()
 
     def add_row(self):
-        row_pos = self.table.rowCount()
-        self.table.insertRow(row_pos)
-        for col in range(self.table.columnCount()):
-            self.table.setItem(row_pos, col, QTableWidgetItem(""))
-        # Ha van versenyid_selector és "Verseny_ID" oszlop, akkor automatikusan kitöltjük
+        insert_at = self.model.rowCount()
+        self.model.insertRows(insert_at, 1)
         if self.versenyid_selector and "Verseny_ID" in self.columns:
-            idx = self.columns.index("Verseny_ID")
-            versenyid = self.selected_versenyid or ""
-            self.table.setItem(row_pos, idx, QTableWidgetItem(versenyid))
-        # Új táblázatsorhoz még nincs df index, jelöljük None-nal
-        if len(self._row_index_map) < self.table.rowCount():
-            self._row_index_map.append(None)
-        # Autofill: lock all cells except first until azonosító beírása megtörténik
-        if self.autofill_from_users:
-            self._autofill_target_row = row_pos
-            for col in range(1, self.table.columnCount()):
-                item = self.table.item(row_pos, col)
-                if item:
-                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            idx_col = self.columns.index("Verseny_ID")
+            idx = self.model.index(insert_at, idx_col)
+            self.model.setData(idx, self.selected_versenyid or "")
+        proxy_row = self.proxy.mapFromSource(self.model.index(insert_at, 0)).row()
+        if proxy_row >= 0:
+            self.view.scrollTo(self.proxy.index(proxy_row, 0))
 
-    def on_cell_activated(self, row, col):
-        # Ha szerkesztés indul, állítsuk a szöveg színét a kijelölt cella háttérszínére
-        item = self.table.item(row, col)
-        if item:
-            # A kiválasztott cella háttérszíne
-            sel_bg_color = self.table.palette().color(self.table.palette().ColorRole.Highlight)
-            item.setForeground(sel_bg_color)
-            self._editing_cell = (row, col)
-            # Elmentjük az aktuális értéket, hogy össze tudjuk hasonlítani mentéskor
-            self._last_value = (row, col, item.text())
-
-    def on_selection_changed(self):
-        # Ha elhagyjuk a szerkesztett cellát, visszaállítjuk a szöveg színét az alapértelmezettre
-        if self._editing_cell:
-            row, col = self._editing_cell
-            item = self.table.item(row, col)
-            if item:
-                default_color = self.table.palette().color(self.table.foregroundRole())
-                item.setForeground(default_color)
-            self._editing_cell = None
-
-    def on_item_changed(self, item):
-        if self._block_save:
-            return
-        row = item.row()
-        col = item.column()
-        col_name = self.columns[col]
-
-        # A módosított látható sorhoz tartozó df index
-        df_idx = self._df_index_for_row(row)
-
-        # Eredeti érték a df-ből még azelőtt, hogy self.df-t frissítenénk
-        prev_val_df = ""
-        if df_idx < len(self.df):
-            prev_raw = self.df.iloc[df_idx][col_name] if col_name in self.df.columns else ""
-            prev_val_df = "" if pd.isna(prev_raw) else str(prev_raw)
-        # Autofill kezelés: csak ha az új sor első celláját töltötték ki
-        if self.autofill_from_users and self._autofill_target_row is not None and row == self._autofill_target_row and col == 0:
-            versenyengedelyszam = item.text().strip()
-            if versenyengedelyszam:
-                try:
-                    users_df = self.autofill_from_users()
-                except Exception:
-                    users_df = pd.DataFrame(columns=["Versenyengedelyszam"])
-                    log_error("Autofill felhasználó betöltési hiba", traceback.format_exc())
-                match = users_df[users_df["Versenyengedelyszam"].astype(str) == versenyengedelyszam] if "Versenyengedelyszam" in users_df.columns else pd.DataFrame()
-                if not match.empty:
-                    user_row = match.iloc[0]
-                    # Töltsük ki az ismert adatokat (GUI + self.df)
-                    for col_idx, col_name2 in enumerate(self.columns):
-                        if col_idx == 0:
-                            continue  # Az első cella már ki van töltve
-                        if col_name2 in user_row:
-                            value = "" if pd.isna(user_row[col_name2]) else str(user_row[col_name2])
-                            self._block_save = True
-                            self.table.setItem(row, col_idx, QTableWidgetItem(value))
-                            self._block_save = False
-                            # frissítsük az alap df-et is
-                            self.df.at[df_idx, col_name2] = value
-                    # Most már szerkeszthetővé tesszük a többi cellát is
-                    for col_idx in range(1, self.table.columnCount()):
-                        item2 = self.table.item(row, col_idx)
-                        if item2:
-                            item2.setFlags(item2.flags() | Qt.ItemFlag.ItemIsEditable)
-                # Akár volt találat, akár nem, az autofill célsor lezárul
-                self._autofill_target_row = None
-
-        # Gender validáció csak ha van gender_col beállítva
-        if self.gender_col and col_name == self.gender_col:
-            val = item.text().strip()
-            if val.lower() == "m":
-                val = "M"
-            elif val.lower() == "f":
-                val = "F"
-            elif val == "":
-                val = ""
-            else:
-                QMessageBox.warning(
-                    self,
-                    "Hibás nem",
-                    "A Gender mező csak M=Male vagy F=Female lehet!\nEgyéb gendert a rendszer nem kezel."
-                )
-                self._block_save = True
-                prev_val = self.df.iloc[df_idx][col_name] if df_idx < len(self.df) else ""
-                if pd.isna(prev_val):
-                    prev_val = ""
-                # IMPORTANT: ne cseréljünk item objektumot, csak a szövegét állítsuk
-                self.table.blockSignals(True)
-                item.setText(str(prev_val))
-                self.table.blockSignals(False)
-                self._block_save = False
-                # self.df már az előző értéket tartalmazza, nincs további teendő
-                return
-            # Normalizált érték beállítása (GUI + self.df)
-            self._block_save = True
-            self.table.blockSignals(True)
-            item.setText(val)
-            self.table.blockSignals(False)
-            self._block_save = False
-            self.df.at[df_idx, col_name] = val
-        else:
-            # Nem gender oszlop: az aktuális item értéke menjen az alap df-be
-            self.df.at[df_idx, col_name] = item.text()
-
-        # Csak akkor frissítsük Last_changed-et, ha ténylegesen változott az érték
-        # Last_changed frissítés csak ha ténylegesen változott az érték
-        if self.update_last_changed_col and col_name != self.update_last_changed_col and item.text() != prev_val_df:
-            now = datetime.now().strftime("%Y-%m-%d %H:%M")
-            last_changed_idx = self.columns.index(self.update_last_changed_col)
-            # GUI frissítés jelblokkolással
-            self.table.blockSignals(True)
-            self.table.setItem(row, last_changed_idx, QTableWidgetItem(now))
-            self.table.blockSignals(False)
-            # self.df frissítése
-            self.df.at[df_idx, self.update_last_changed_col] = now
-
-        self.schedule_save_changes()
-        # Mentés után a szerkesztett cella színét is visszaállítjuk alapértelmezettre
-        if self._editing_cell:
-            row2, col2 = self._editing_cell
-            item2 = self.table.item(row2, col2)
-            if item2:
-                default_color = self.table.palette().color(self.table.foregroundRole())
-                item2.setForeground(default_color)
-            self._editing_cell = None
-        self._last_value = None
-
+    # ---- Mentési logika
     def schedule_save_changes(self):
-        # Ha már fut a késleltetett mentő timer vagy éppen mentünk, csak jelezzük a pending állapotot
         if self._save_timer.isActive() or self._save_in_progress:
             self._pending_save = True
             self._pending_label.setText("Mentésre vár…")
         else:
             self._pending_save = False
             self._pending_label.setText("")
-            self._save_timer.start(10000)  # 10 másodperc
+            self._save_timer.start(10000)  # 10s
 
     def _do_save_changes(self):
         self.save_changes()
 
     def _snapshot_df(self):
-        """
-        A teljes adatállapot visszaadása (nem a látható táblanézetből építve),
-        hogy a szűrt nézet ne vágja le a nem látható sorokat mentéskor.
-        """
-        return self.df.copy()
+        return self.model.df.copy()
 
     def _start_async_save(self, df):
         if self._save_in_progress:
-            # már folyamatban van mentés; jelezzük, hogy utána ismét mentsen
             self._pending_save = True
             self._pending_label.setText("Mentésre vár…")
             return
@@ -429,18 +474,14 @@ class TableTab(QWidget):
     def _on_save_finished(self, ok, err_detail):
         self._save_in_progress = False
         if ok:
-            self._pending_label.setStyleSheet("color: #4CAF50; font-weight: bold;")  # green
+            self._pending_label.setStyleSheet("color: #4CAF50; font-weight: bold;")
             self._pending_label.setText("Mentve")
-            # Rövid idő után vissza narancs és ürítés
             QTimer.singleShot(2000, lambda: self._pending_label.setText(""))
             QTimer.singleShot(1, lambda: self._pending_label.setStyleSheet("color: orange; font-weight: bold;"))
-            # Ha közben érkezett újabb változtatás, indítsuk újra a késleltetett mentést
             if self._pending_save:
                 self._pending_save = False
-                # rövid várakozással gyűjtsük össze a friss módosításokat
                 self._save_timer.start(2000)
         else:
-            # Hiba kezelése: log + helyreállító CSV + felhasználói tájékoztatás (ritkított pop-up)
             log_error("Mentési hiba", err_detail)
             df_snapshot = self._snapshot_df()
             target_path = _target_path_for_save_func(self.save_func)
@@ -463,62 +504,25 @@ class TableTab(QWidget):
                     pass
 
     def save_changes(self):
-        # Mindig a belső self.df állapotot mentsük, így a szűrt nézet nem vágja le a többi sort
         df_new = self._snapshot_df()
         self._start_async_save(df_new)
 
-    def on_search(self, text):
-        # Gyors keresés: csak a megadott oszlopokban keres
-        try:
-            search = text.strip().lower()
-            if not search:
-                # törölt szűrés: töltsük vissza a teljes táblát és állítsuk identitás hozzárendelést
-                self._row_index_map = list(range(len(self.df)))
-                self.load_data()
-                return
-            # Csak ezekben az oszlopokban keresünk
-            search_cols = ["Versenyengedelyszam", "Name", "Phone number", "Email"]
-            # Ellenőrizzük, hogy ezek az oszlopok léteznek-e
-            valid_cols = [col for col in search_cols if col in self.df.columns]
-            if not valid_cols:
-                # Ha nincs érvényes oszlop, üres találati lista
-                self._row_index_map = []
-                self.load_data(filtered_df=self.df.iloc[[]])
-                return
-            arr = self.df[valid_cols].fillna("").astype(str).values
-            mask = [any(search in cell.lower() for cell in row) for row in arr]
-            # Látható sorok -> eredeti df indexek
-            mapping = [i for i, m in enumerate(mask) if m]
-            filtered_df = self.df.iloc[mapping].reset_index(drop=True)
-            # Állítsuk be a mappinget a szűrt nézethez
-            self._row_index_map = mapping
-            self.load_data(filtered_df=filtered_df)
-        except Exception:
-            log_error("Keresési hiba", traceback.format_exc())
-
     def flush_and_wait(self, timeout_ms=5000):
-        """
-        Bezáráskor szinkron mentés, hogy adatvesztést elkerüljük.
-        Rövid ideig várunk a háttérmentésre, majd szükség esetén szinkronban mentünk.
-        """
+        """Bezáráskor szinkron mentés, hogy adatvesztést elkerüljük."""
         try:
             if self._save_timer.isActive():
                 self._save_timer.stop()
-            # Adjunk esélyt a futó mentésnek, hogy befejeződjön
             t0 = time.time()
             while self._save_in_progress and (time.time() - t0) < (timeout_ms / 1000.0):
                 QApplication.processEvents()
                 time.sleep(0.05)
-            # Mindig a teljes df-et mentsük, ne a látható táblát
-            df_new = self.df.copy()
+            df_new = self.model.df.copy()
             try:
                 self.save_func(df_new)
             except Exception:
-                # Ha itt is elbukik, legalább legyen helyreállító CSV és log
                 log_error("Záráskor szinkron mentési hiba", traceback.format_exc())
                 _write_recovery_csv(df_new, _target_path_for_save_func(self.save_func))
         except Exception:
-            # Utolsó esély jelzés; itt már zárunk, de legalább látjuk a hibát
             log_error("flush_and_wait hiba", traceback.format_exc())
             self._pending_label.setStyleSheet("color: red; font-weight: bold;")
             self._pending_label.setText("Mentési hiba záráskor. Részletek: database/error.log")
@@ -531,6 +535,7 @@ class MainWindow(QWidget):
         self.resize(1200, 600)
         layout = QVBoxLayout()
         tabs = QTabWidget()
+
         # Felhasználók tab: Last_changed automatikus frissítés, Gender validáció, kereső
         self.users_tab = TableTab(
             load_db, save_db, COLUMNS,
@@ -539,10 +544,10 @@ class MainWindow(QWidget):
             enable_search=True
         )
         tabs.addTab(self.users_tab, "Felhasználók")
+
         # Eredmények tab: kereső, autofill, versenyID selector
         if "Kategoria" not in EREDMENY_COLUMNS:
             EREDMENY_COLUMNS.append("Kategoria")
-        # Verseny_ID selector előkészítése
         try:
             versenyek_df = load_versenyek_db()
         except Exception:
@@ -551,6 +556,7 @@ class MainWindow(QWidget):
         versenyid_list = [str(v) for v in versenyek_df["Verseny_ID"].dropna().unique() if str(v).strip()] if "Verseny_ID" in versenyek_df.columns else []
         versenyid_selector = QComboBox()
         versenyid_selector.addItems(versenyid_list)
+
         self.eredmeny_tab = TableTab(
             load_eredmeny_db, save_eredmeny_db, EREDMENY_COLUMNS,
             enable_search=True,
@@ -558,13 +564,14 @@ class MainWindow(QWidget):
             versenyid_selector=versenyid_selector
         )
         tabs.addTab(self.eredmeny_tab, "Eredmények")
+
         self.versenyek_tab = TableTab(load_versenyek_db, save_versenyek_db, VERSENYEK_COLUMNS)
         tabs.addTab(self.versenyek_tab, "Versenyek")
+
         layout.addWidget(tabs)
         self.setLayout(layout)
 
     def closeEvent(self, event):
-        # Zárás előtt próbáljuk a változásokat diszken biztosan rögzíteni
         try:
             self.users_tab.flush_and_wait(5000)
         except Exception:
