@@ -84,12 +84,16 @@ class PandasTableModel(QAbstractTableModel):
     - Last_changed automatikus frissítés
     - Keresési blob karbantartás (gyors szűréshez)
     - Autofill támogatás (első oszlop beírásakor, ha be van állítva egy users_df loader)
+    - Opcionális: egyedi (A,B) kulcspár tiltja a duplikációt
+    - Opcionális: 'id-like' oszlopok normalizálása (pl. '123.0' -> '123')
     """
     def __init__(self, df: pd.DataFrame, columns: list[str],
                  update_last_changed_col: str | None = None,
                  gender_col: str | None = None,
                  autofill_from_users=None,
                  on_error=None,
+                 unique_pair_cols: tuple[str, str] | None = None,
+                 id_like_cols: list[str] | None = None,
                  parent=None):
         super().__init__(parent)
         self.df = df.copy()
@@ -102,8 +106,33 @@ class PandasTableModel(QAbstractTableModel):
         self.gender_col = gender_col
         self.autofill_from_users = autofill_from_users
         self.on_error = on_error
+        self.unique_pair_cols = unique_pair_cols
+        self.id_like_cols = set(id_like_cols or [])
+        # mely oszlopokban keresünk
         self._search_cols_default = ["Versenyengedelyszam", "Name", "Phone number", "Email", "Egyesulet"]
         self._rebuild_search_blob()
+
+    # --------- segéd: ID normalizálás (pl. 123.0 -> 123)
+    def _normalize_id_like(self, col_name: str, value) -> str:
+        if col_name not in self.id_like_cols:
+            # nincs speciális normalizálás
+            if value is None or (isinstance(value, float) and pd.isna(value)):
+                return ""
+            return str(value)
+        # id-like mező: fejezzük le a .0-t és az értelmetlen whitespace-t
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return ""
+        # szám -> int ha egész
+        if isinstance(value, (int, )):
+            return str(value)
+        if isinstance(value, float):
+            if float(value).is_integer():
+                return str(int(value))
+            return str(value)
+        s = str(value).strip()
+        if s.endswith(".0"):
+            s = s[:-2]
+        return s
 
     def rowCount(self, parent=QModelIndex()):
         return len(self.df)
@@ -120,7 +149,8 @@ class PandasTableModel(QAbstractTableModel):
         if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole):
             if pd.isna(value):
                 return ""
-            return str(value)
+            # ID-like oszlopokra speciális megjelenítés
+            return self._normalize_id_like(col_name, value)
         return None
 
     def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
@@ -140,7 +170,11 @@ class PandasTableModel(QAbstractTableModel):
             return False
         r, c = index.row(), index.column()
         col_name = self.columns[c]
-        new_val = "" if value is None else str(value)
+
+        # Bemenet normalizálása
+        new_val_raw = "" if value is None else value
+        # ID-like oszlop esetén normalizált stringet tárolunk
+        new_val = self._normalize_id_like(col_name, new_val_raw)
 
         # Gender validáció
         if self.gender_col and col_name == self.gender_col:
@@ -156,10 +190,31 @@ class PandasTableModel(QAbstractTableModel):
                     self.on_error("Hibás nem", "A Gender mező csak M=Male vagy F=Female lehet!\nEgyéb gendert a rendszer nem kezel.")
                 return False
 
-        prev_val = "" if pd.isna(self.df.iat[r, c]) else str(self.df.iat[r, c])
+        prev_val = "" if pd.isna(self.df.iat[r, c]) else self._normalize_id_like(col_name, self.df.iat[r, c])
         if prev_val == new_val:
             return True
 
+        # Duplikáció tiltása (unique (A,B) pár)
+        if self.unique_pair_cols is not None and col_name in self.unique_pair_cols:
+            a_col, b_col = self.unique_pair_cols
+            # A és B aktuális/új értékei
+            a_val = new_val if col_name == a_col else self._normalize_id_like(a_col, self.df.at[r, a_col] if a_col in self.df.columns else "")
+            b_val = new_val if col_name == b_col else self._normalize_id_like(b_col, self.df.at[r, b_col] if b_col in self.df.columns else "")
+            # Keressük, van-e másik sor ugyanezzel a párral
+            if a_col in self.df.columns and b_col in self.df.columns:
+                mask = (self.df.index != r) & (self.df[a_col].astype(str).map(lambda x: self._normalize_id_like(a_col, x)) == a_val) & \
+                       (self.df[b_col].astype(str).map(lambda x: self._normalize_id_like(b_col, x)) == b_val)
+                if mask.any():
+                    if self.on_error:
+                        self.on_error(
+                            "Duplikált páros",
+                            f"Ugyanaz a Versenyengedélyszám már szerepel ezen a versenyen (Verseny_ID={a_val})."
+                            if a_col == "Verseny_ID" and b_col == "Versenyengedelyszam"
+                            else "Ez a kulcspár már létezik."
+                        )
+                    return False
+
+        # Érték rögzítése
         self.df.iat[r, c] = new_val
 
         # Autofill az első oszlop alapján
@@ -196,6 +251,10 @@ class PandasTableModel(QAbstractTableModel):
         try:
             cols = [cname for cname in self._search_cols_default if cname in self.df.columns]
             joined = " ".join("" if pd.isna(self.df.at[r, cname]) else str(self.df.at[r, cname]) for cname in cols).lower()
+            # ha id-like, akkor az is normalizáltan legyen a blobban
+            for cname in cols:
+                if cname in self.id_like_cols:
+                    joined = joined.replace(str(self.df.at[r, cname]), self._normalize_id_like(cname, self.df.at[r, cname]))
             self._search_blob.iat[r] = joined
         except Exception:
             log_error("Keresési cache frissítési hiba", traceback.format_exc())
@@ -233,7 +292,14 @@ class PandasTableModel(QAbstractTableModel):
         try:
             cols = [c for c in self._search_cols_default if c in self.df.columns]
             if cols:
-                self._search_blob = self.df[cols].fillna("").astype(str).agg(" ".join, axis=1).str.lower()
+                # Normalizált string aggregátum
+                def norm_series(col):
+                    if col in self.id_like_cols:
+                        return self.df[col].apply(lambda v: self._normalize_id_like(col, v))
+                    return self.df[col].fillna("").astype(str)
+                parts = [norm_series(c) for c in cols]
+                tmp = pd.concat(parts, axis=1)
+                self._search_blob = tmp.fillna("").astype(str).agg(" ".join, axis=1).str.lower()
             else:
                 self._search_blob = pd.Series([""] * len(self.df), index=self.df.index)
         except Exception:
@@ -247,12 +313,14 @@ class SearchFilterProxy(QSortFilterProxyModel):
     - AND logika több szó esetén
     - Kis/nagybetűtől független
     - Sorlimit: csak az első N találatot engedi át (gyors üres keresésnél is)
+    - Teljes találatszám követése, hogy a UI eldönthesse: kell-e "További találatok…" gomb
     """
     def __init__(self, source_model: PandasTableModel, row_limit: int = 500, parent=None):
         super().__init__(parent)
         self._text = ""
         self._row_limit = int(row_limit)
         self._accepted_so_far = 0
+        self._matched_total = 0
         self.setSourceModel(source_model)
         self.setFilterCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
 
@@ -265,6 +333,7 @@ class SearchFilterProxy(QSortFilterProxyModel):
 
     def _reset_counter(self, *args, **kwargs):
         self._accepted_so_far = 0
+        self._matched_total = 0
 
     def setRowLimit(self, n: int):
         self._row_limit = max(1, int(n))
@@ -274,20 +343,25 @@ class SearchFilterProxy(QSortFilterProxyModel):
     def currentRowLimit(self) -> int:
         return self._row_limit
 
+    def matchedTotal(self) -> int:
+        return int(self._matched_total)
+
     def setFilterText(self, text: str):
         self._text = (text or "").strip().lower()
         self._reset_counter()
         self.invalidateFilter()
 
     def filterAcceptsRow(self, source_row: int, source_parent: QModelIndex):
-        if self._accepted_so_far >= self._row_limit:
-            return False
+        model: PandasTableModel = self.sourceModel()  # type: ignore
 
         if not self._text:
+            # üres kereső: minden sor találat -> számoljuk
+            self._matched_total += 1
+            if self._accepted_so_far >= self._row_limit:
+                return False
             self._accepted_so_far += 1
             return True
 
-        model: PandasTableModel = self.sourceModel()  # type: ignore
         try:
             row_text = model._search_blob.iat[source_row]
         except Exception:
@@ -296,8 +370,12 @@ class SearchFilterProxy(QSortFilterProxyModel):
         terms = [t for t in self._text.split() if t]
         ok = all(t in row_text for t in terms)
         if ok:
+            self._matched_total += 1
+            if self._accepted_so_far >= self._row_limit:
+                return False
             self._accepted_so_far += 1
-        return ok
+            return True
+        return False
 
 
 # --------------------------
@@ -305,7 +383,8 @@ class SearchFilterProxy(QSortFilterProxyModel):
 # --------------------------
 
 class TableTab(QWidget):
-    def __init__(self, load_func, save_func, columns, parent=None, update_last_changed_col=None, gender_col=None, enable_search=False, autofill_from_users=None, versenyid_selector=None):
+    def __init__(self, load_func, save_func, columns, parent=None, update_last_changed_col=None, gender_col=None, enable_search=False, autofill_from_users=None, versenyid_selector=None,
+                 unique_pair_cols: tuple[str, str] | None = None, id_like_cols: list[str] | None = None):
         super().__init__(parent)
         self.load_func = load_func
         self.save_func = save_func
@@ -316,6 +395,8 @@ class TableTab(QWidget):
         self.autofill_from_users = autofill_from_users  # callable returning DataFrame, or None
         self.versenyid_selector = versenyid_selector  # QComboBox vagy None
         self.selected_versenyid = None
+        self.unique_pair_cols = unique_pair_cols
+        self.id_like_cols = id_like_cols or []
 
         # Async save state
         self._save_timer = QTimer(self)
@@ -372,7 +453,9 @@ class TableTab(QWidget):
             update_last_changed_col=self.update_last_changed_col,
             gender_col=self.gender_col,
             autofill_from_users=self.autofill_from_users,
-            on_error=lambda t, m: QMessageBox.warning(self, t, m)
+            on_error=lambda t, m: QMessageBox.warning(self, t, m),
+            unique_pair_cols=self.unique_pair_cols,
+            id_like_cols=self.id_like_cols
         )
         self.proxy = SearchFilterProxy(self.model, row_limit=500)
 
@@ -391,14 +474,14 @@ class TableTab(QWidget):
         add_btn.clicked.connect(self.add_row)
         btn_layout.addWidget(add_btn)
 
-        # "További találatok…" gomb – növeli a limitet dinamikusan
-        more_btn = QPushButton("További találatok…")
+        # "További találatok…" gomb – csak akkor látszik, ha van több találat, mint a megjelenített
+        self.more_btn = QPushButton("További találatok…")
         def _more():
             self.proxy.setRowLimit(self.proxy.currentRowLimit() + 1000)
+            self._update_more_button_visibility()
             self.view.scrollToBottom()
-        more_btn.clicked.connect(_more)
-        btn_layout.addWidget(more_btn)
-
+        self.more_btn.clicked.connect(_more)
+        btn_layout.addWidget(self.more_btn)
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
 
@@ -414,12 +497,34 @@ class TableTab(QWidget):
         self.model.dataChanged.connect(lambda *_: self.schedule_save_changes())
         self.model.rowsInserted.connect(lambda *_: self.schedule_save_changes())
 
+        # A gomb láthatóságának frissítése minden releváns változásnál
+        self.proxy.layoutChanged.connect(self._update_more_button_visibility)
+        self.proxy.modelReset.connect(self._update_more_button_visibility)
+        self.proxy.rowsInserted.connect(self._update_more_button_visibility)
+        self.proxy.rowsRemoved.connect(self._update_more_button_visibility)
+
         # Keresés debounce – bármennyi karakterre szűr
         if self.enable_search:
             self._search_timer = QTimer(self)
             self._search_timer.setSingleShot(True)
-            self._search_timer.timeout.connect(lambda: self.proxy.setFilterText(self.search_edit.text()))
+            def _apply_filter():
+                self.proxy.setFilterText(self.search_edit.text())
+                self._update_more_button_visibility()
+            self._search_timer.timeout.connect(_apply_filter)
             self.search_edit.textChanged.connect(lambda _: self._search_timer.start(120))
+
+        # első láthatóság beállítása
+        self._update_more_button_visibility()
+
+    def _update_more_button_visibility(self):
+        try:
+            total = self.proxy.matchedTotal()
+            shown = self.proxy.rowCount()
+            # akkor mutassuk, ha van több találat, mint amennyit most mutatunk
+            self.more_btn.setVisible(shown < total)
+        except Exception:
+            # hiba esetén ne zavarjuk a UI-t
+            self.more_btn.setVisible(False)
 
     def on_versenyid_changed(self, idx):
         if self.versenyid_selector:
@@ -435,6 +540,7 @@ class TableTab(QWidget):
         proxy_row = self.proxy.mapFromSource(self.model.index(insert_at, 0)).row()
         if proxy_row >= 0:
             self.view.scrollTo(self.proxy.index(proxy_row, 0))
+        self._update_more_button_visibility()
 
     # ---- Mentési logika
     def schedule_save_changes(self):
@@ -541,11 +647,14 @@ class MainWindow(QWidget):
             load_db, save_db, COLUMNS,
             update_last_changed_col="Last_changed",
             gender_col="Gender",
-            enable_search=True
+            enable_search=True,
+            # A felhasználók táblánál nincs egyedi (A,B) kulcs-ellenőrzés, és nem kell ID-normalizálás
+            unique_pair_cols=None,
+            id_like_cols=[]
         )
         tabs.addTab(self.users_tab, "Felhasználók")
 
-        # Eredmények tab: kereső, autofill, versenyID selector
+        # Eredmények tab: kereső, autofill, versenyID selector, egyedi kulcspár + ID-normalizálás
         if "Kategoria" not in EREDMENY_COLUMNS:
             EREDMENY_COLUMNS.append("Kategoria")
         try:
@@ -561,11 +670,20 @@ class MainWindow(QWidget):
             load_eredmeny_db, save_eredmeny_db, EREDMENY_COLUMNS,
             enable_search=True,
             autofill_from_users=load_db,
-            versenyid_selector=versenyid_selector
+            versenyid_selector=versenyid_selector,
+            # Egyediség: (Verseny_ID, Versenyengedelyszam) pár
+            unique_pair_cols=("Verseny_ID", "Versenyengedelyszam"),
+            # ID-like oszlop: Versenyengedelyszam -> ne legyen .0
+            id_like_cols=["Versenyengedelyszam"]
         )
         tabs.addTab(self.eredmeny_tab, "Eredmények")
 
-        self.versenyek_tab = TableTab(load_versenyek_db, save_versenyek_db, VERSENYEK_COLUMNS)
+        self.versenyek_tab = TableTab(
+            load_versenyek_db, save_versenyek_db, VERSENYEK_COLUMNS,
+            enable_search=False,
+            unique_pair_cols=None,
+            id_like_cols=[]
+        )
         tabs.addTab(self.versenyek_tab, "Versenyek")
 
         layout.addWidget(tabs)
