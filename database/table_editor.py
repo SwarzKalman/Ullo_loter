@@ -360,12 +360,13 @@ class SearchFilterProxy(QSortFilterProxyModel):
     - FIX: keresés esetén nincs limit, minden találatot mutat
     - PERFORMANCE: 12000+ sorokhoz optimalizált
     """
-    def __init__(self, source_model: PandasTableModel, row_limit: int = 500, parent=None):
+    def __init__(self, source_model: PandasTableModel, row_limit: int = 500, versenyid_getter=None, parent=None):
         super().__init__(parent)
         self._text = ""
         self._row_limit = int(row_limit)
         self._accepted_so_far = 0
         self._matched_total = 0
+        self._versenyid_getter = versenyid_getter
         self.setSourceModel(source_model)
         self.setFilterCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
 
@@ -415,6 +416,36 @@ class SearchFilterProxy(QSortFilterProxyModel):
         except Exception:
             return False
 
+        # Verseny_ID szerinti szűrés: ha van getter és nem üres a kiválasztott érték,
+        # csak azokat a sorokat engedjük át, amelyek Verseny_ID-je megegyezik.
+        if self._versenyid_getter:
+            try:
+                selected_vid = (self._versenyid_getter() or "").strip()
+                if selected_vid:
+                    if "Verseny_ID" in model.df.columns:
+                        raw_vid = model.df.at[source_row, "Verseny_ID"]
+                        row_vid = "" if pd.isna(raw_vid) else str(raw_vid).strip()
+                        if row_vid != selected_vid:
+                            # Log mismatch to database/error.log for debugging
+                            try:
+                                log_error(
+                                    "Verseny_ID filter mismatch",
+                                    f"selected_vid={selected_vid!r}, row={source_row}, row_vid={row_vid!r}"
+                                )
+                            except Exception:
+                                pass
+                            return False
+                    else:
+                        # Ha nincs Verseny_ID oszlop, akkor ne engedjük át (biztonsági döntés)
+                        try:
+                            log_error("Verseny_ID missing in model", f"selected_vid={selected_vid!r}")
+                        except Exception:
+                            pass
+                        return False
+            except Exception:
+                # Ha a szűrés során hiba történik, ne engedjük át a sort
+                return False
+
         # Ha nincs keresési szöveg (üres keresés), akkor alkalmazzuk a row_limit-et
         if not self._text:
             self._matched_total += 1
@@ -433,7 +464,7 @@ class SearchFilterProxy(QSortFilterProxyModel):
         ok = all(t in row_text for t in terms)
         if ok:
             self._matched_total += 1
-            
+
             # TELJESÍTMÉNY OPTIMALIZÁLÁS 12000+ sorokhoz:
             # - 1 karakter: nincs keresés (túl sok találat)
             # - 2 karakter: max 100 találat (gyors)
@@ -447,7 +478,7 @@ class SearchFilterProxy(QSortFilterProxyModel):
                 if self._accepted_so_far >= 100:
                     return False
             # 3+ karakter esetén nincs limit - minden találatot megjelenítünk
-            
+
             self._accepted_so_far += 1
             return True
         return False
@@ -544,7 +575,14 @@ class TableTab(QWidget):
             id_like_cols=self.id_like_cols,
             versenyid_getter=_get_selected_versenyid
         )
-        self.proxy = SearchFilterProxy(self.model, row_limit=500)
+        self.proxy = SearchFilterProxy(self.model, row_limit=500, versenyid_getter=_get_selected_versenyid)
+        # Apply initial verseny filter (in case a value was already selected)
+        try:
+            self.proxy.invalidateFilter()
+            self._update_more_button_visibility()
+            self._update_count_label()
+        except Exception:
+            pass
 
         # Mindig tartsunk egy üres sort a végén
         self._ensure_trailing_empty_row()
@@ -692,6 +730,15 @@ class TableTab(QWidget):
     def on_versenyid_changed(self, idx):
         if self.versenyid_selector:
             self.selected_versenyid = self.versenyid_selector.currentText()
+            # Re-evaluate proxy filter when the selected Verseny_ID changes
+            try:
+                if hasattr(self, "proxy") and self.proxy is not None:
+                    self.proxy.invalidateFilter()
+                    # Update UI indicators
+                    self._update_more_button_visibility()
+                    self._update_count_label()
+            except Exception:
+                pass
 
     def add_row(self):
         insert_at = self.model.rowCount()

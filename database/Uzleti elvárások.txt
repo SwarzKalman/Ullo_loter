@@ -12,7 +12,7 @@ Eredmények nézet:
 Legördülő listából kiválasztható az a verseny, ahová adatot szeretnénk felvinni.
 A ki NEM választott versenyek adatait NEM jeleníti meg a nézet
 ha egy üres sorban az első cellát kitöltöttem, akkor automatikusan töltse ki az aktuális verseny ID-jával a verseny ID sorát
-NINCS KÉSZ!!! Ha egy sort elkezdek írni, de visszatörlöm, akkor az az üres sor, tehát nem kell alulra dupla, törölje ki az extrán felvettet a program
+Ha egy sort elkezdek írni, de visszatörlöm, akkor az az üres sor, tehát nem kell alulra dupla, törölje ki az extrán felvettet a program
 
 
 Versenyek nézet:

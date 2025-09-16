@@ -44,3 +44,78 @@ Traceback (most recent call last):
 TypeError: 'method' object is not subscriptable
 
 
+[2025-09-16 12:46:08] Verseny_ID filter mismatch
+selected_vid='VID_00003', row=0, row_vid='VID_00001'
+
+[2025-09-16 12:46:08] Verseny_ID filter mismatch
+selected_vid='VID_00003', row=1, row_vid='VID_00001'
+
+[2025-09-16 12:46:08] Verseny_ID filter mismatch
+selected_vid='VID_00003', row=2, row_vid='VID_00001'
+
+[2025-09-16 12:46:08] Verseny_ID filter mismatch
+selected_vid='VID_00003', row=3, row_vid='VID_00001'
+
+[2025-09-16 12:46:08] Verseny_ID filter mismatch
+selected_vid='VID_00003', row=4, row_vid='VID_00001'
+
+[2025-09-16 12:46:15] Verseny_ID filter mismatch
+selected_vid='VID_00003', row=5, row_vid=''
+
+[2025-09-16 12:46:15] Verseny_ID filter mismatch
+selected_vid='VID_00003', row=5, row_vid=''
+
+[2025-09-16 12:46:15] Verseny_ID filter mismatch
+selected_vid='VID_00003', row=5, row_vid=''
+
+[2025-09-16 12:46:15] Verseny_ID filter mismatch
+selected_vid='VID_00003', row=5, row_vid=''
+
+[2025-09-16 12:46:15] Verseny_ID filter mismatch
+selected_vid='VID_00003', row=5, row_vid=''
+
+[2025-09-16 12:46:15] Verseny_ID filter mismatch
+selected_vid='VID_00003', row=5, row_vid=''
+
+[2025-09-16 12:46:15] Verseny_ID filter mismatch
+selected_vid='VID_00003', row=5, row_vid=''
+
+[2025-09-16 12:46:15] Verseny_ID filter mismatch
+selected_vid='VID_00003', row=5, row_vid=''
+
+[2025-09-16 12:46:17] Verseny_ID filter mismatch
+selected_vid='VID_00002', row=5, row_vid='VID_00003'
+
+[2025-09-16 12:46:17] Verseny_ID filter mismatch
+selected_vid='VID_00002', row=0, row_vid='VID_00001'
+
+[2025-09-16 12:46:17] Verseny_ID filter mismatch
+selected_vid='VID_00002', row=1, row_vid='VID_00001'
+
+[2025-09-16 12:46:17] Verseny_ID filter mismatch
+selected_vid='VID_00002', row=2, row_vid='VID_00001'
+
+[2025-09-16 12:46:17] Verseny_ID filter mismatch
+selected_vid='VID_00002', row=3, row_vid='VID_00001'
+
+[2025-09-16 12:46:17] Verseny_ID filter mismatch
+selected_vid='VID_00002', row=4, row_vid='VID_00001'
+
+[2025-09-16 12:46:18] Verseny_ID filter mismatch
+selected_vid='VID_00001', row=5, row_vid='VID_00003'
+
+[2025-09-16 12:46:20] Verseny_ID filter mismatch
+selected_vid='VID_00003', row=0, row_vid='VID_00001'
+
+[2025-09-16 12:46:20] Verseny_ID filter mismatch
+selected_vid='VID_00003', row=1, row_vid='VID_00001'
+
+[2025-09-16 12:46:20] Verseny_ID filter mismatch
+selected_vid='VID_00003', row=2, row_vid='VID_00001'
+
+[2025-09-16 12:46:20] Verseny_ID filter mismatch
+selected_vid='VID_00003', row=3, row_vid='VID_00001'
+
+[2025-09-16 12:46:20] Verseny_ID filter mismatch
+selected_vid='VID_00003', row=4, row_vid='VID_00001'
+
