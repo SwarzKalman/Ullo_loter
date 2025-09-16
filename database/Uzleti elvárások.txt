@@ -18,3 +18,11 @@ Ha egy sort elkezdek írni, de visszatörlöm, akkor az az üres sor, tehát nem
 Versenyek nézet:
 Itt vehetők fel Versenyek
 NINCS KÉSZ!!! ID-juk ne legyen átírható, új sor esetén adja a következő ID-t automatikusan
+
+Ismert hibák:
+Versenyek: Lehet módosítani az ID-t
+ha új verseny kerül felvételre, újra kell indítani az alkalmazást, hogy az eredményeknél használható legyen
+nem generálja a versenyID-t 
+
+
+Statisztika és eredmények nézet hiányzik
