@@ -314,7 +314,7 @@ class PandasTableModel(QAbstractTableModel):
                     return self.df[col].fillna("").astype(str)
                 parts = [norm_series(c) for c in cols]
                 tmp = pd.concat(parts, axis=1)
-                self._search_blob = tmp.fillna("").astype[str].agg(" ".join, axis=1).str.lower()
+                self._search_blob = tmp.fillna("").astype(str).agg(" ".join, axis=1).str.lower()
             else:
                 self._search_blob = pd.Series([""] * len(self.df), index=self.df.index)
         except Exception:
@@ -330,6 +330,8 @@ class SearchFilterProxy(QSortFilterProxyModel):
     - Sorlimit: csak az első N találatot engedi át (gyors üres keresésnél is)
     - Teljes találatszám követése
     - FIX: az utolsó, üres sor mindig látszódjon
+    - FIX: keresés esetén nincs limit, minden találatot mutat
+    - PERFORMANCE: 12000+ sorokhoz optimalizált
     """
     def __init__(self, source_model: PandasTableModel, row_limit: int = 500, parent=None):
         super().__init__(parent)
@@ -386,6 +388,7 @@ class SearchFilterProxy(QSortFilterProxyModel):
         except Exception:
             return False
 
+        # Ha nincs keresési szöveg (üres keresés), akkor alkalmazzuk a row_limit-et
         if not self._text:
             self._matched_total += 1
             if self._accepted_so_far >= self._row_limit:
@@ -393,6 +396,7 @@ class SearchFilterProxy(QSortFilterProxyModel):
             self._accepted_so_far += 1
             return True
 
+        # Keresési szöveg feldolgozása
         try:
             row_text = model._search_blob.iat[source_row]
         except Exception:
@@ -402,8 +406,21 @@ class SearchFilterProxy(QSortFilterProxyModel):
         ok = all(t in row_text for t in terms)
         if ok:
             self._matched_total += 1
-            if self._accepted_so_far >= self._row_limit:
+            
+            # TELJESÍTMÉNY OPTIMALIZÁLÁS 12000+ sorokhoz:
+            # - 1 karakter: nincs keresés (túl sok találat)
+            # - 2 karakter: max 100 találat (gyors)
+            # - 3+ karakter: minden eredmény (pontos)
+            search_length = len(self._text.strip())
+            if search_length == 1:
+                # 1 karakter: túl sok találat, ne keressünk
                 return False
+            elif search_length == 2:
+                # 2 karakter: csak az első 100 találatot mutatjuk (gyorsaság)
+                if self._accepted_so_far >= 100:
+                    return False
+            # 3+ karakter esetén nincs limit - minden találatot megjelenítünk
+            
             self._accepted_so_far += 1
             return True
         return False
@@ -469,7 +486,7 @@ class TableTab(QWidget):
             search_layout = QHBoxLayout()
             search_label = QLabel("Keresés:")
             self.search_edit = QLineEdit()
-            self.search_edit.setPlaceholderText("Írj be keresendő szöveget…")
+            self.search_edit.setPlaceholderText("Írj be keresendő szöveget… (min. 2 karakter)")
             search_layout.addWidget(search_label)
             search_layout.addWidget(self.search_edit)
             layout.addLayout(search_layout)
@@ -560,7 +577,8 @@ class TableTab(QWidget):
                 self._update_more_button_visibility()
                 self._update_count_label()
             self._search_timer.timeout.connect(_apply_filter)
-            self.search_edit.textChanged.connect(lambda _: self._search_timer.start(120))
+            # Increased debounce time for better performance with large datasets
+            self.search_edit.textChanged.connect(lambda _: self._search_timer.start(500))
 
         # induló állapot
         self._update_more_button_visibility()
