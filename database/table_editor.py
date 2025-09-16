@@ -211,19 +211,20 @@ class PandasTableModel(QAbstractTableModel):
             b_val = new_val if col_name == b_col else self._normalize_id_like(b_col, self.df.at[r, b_col] if b_col in self.df.columns else "")
             # If either key is empty, skip duplicate check so the user can clear entries.
             if str(a_val).strip() == "" or str(b_val).strip() == "":
-                pass
-            if a_col in self.df.columns and b_col in self.df.columns:
-                mask = (self.df.index != r) & (self.df[a_col].astype(str).map(lambda x: self._normalize_id_like(a_col, x)) == a_val) & \
-                       (self.df[b_col].astype(str).map(lambda x: self._normalize_id_like(b_col, x)) == b_val)
-                if mask.any():
-                    if self.on_error:
-                        self.on_error(
-                            "Duplikált páros",
-                            f"Ugyanaz a Versenyengedélyszám már szerepel ezen a versenyen (Verseny_ID={a_val})."
-                            if a_col == "Verseny_ID" and b_col == "Versenyengedelyszam"
-                            else "Ez a kulcspár már létezik."
-                        )
-                    return False
+                pass  # Skip duplicate check when either value is empty
+            else:
+                if a_col in self.df.columns and b_col in self.df.columns:
+                    mask = (self.df.index != r) & (self.df[a_col].astype(str).map(lambda x: self._normalize_id_like(a_col, x)) == a_val) & \
+                           (self.df[b_col].astype(str).map(lambda x: self._normalize_id_like(b_col, x)) == b_val)
+                    if mask.any():
+                        if self.on_error:
+                            self.on_error(
+                                "Duplikált páros",
+                                f"Ugyanaz a Versenyengedélyszám már szerepel ezen a versenyen (Verseny_ID={a_val})."
+                                if a_col == "Verseny_ID" and b_col == "Versenyengedelyszam"
+                                else "Ez a kulcspár már létezik."
+                            )
+                        return False
 
         # Érték rögzítése
         self.df.iat[r, c] = new_val
@@ -621,14 +622,20 @@ class TableTab(QWidget):
         if self.model.rowCount() == 0:
             self.model.insertRows(0, 1)
             return
-        last = self.model.rowCount() - 1
-        if not self.model.is_row_empty(last):
-            self.model.insertRows(self.model.rowCount(), 1)
-            return
-        if self.model.rowCount() >= 2:
+        
+        # JAVÍTÁS: Távolítsuk el az összes felesleges üres sort a végéről
+        # De MINDIG hagyjunk meg legalább egy üres sort a végén
+        while self.model.rowCount() >= 2:
+            last = self.model.rowCount() - 1
             prev = self.model.rowCount() - 2
             if self.model.is_row_empty(prev) and self.model.is_row_empty(last):
-                self.model.removeRows(last, 1)
+                self.model.removeRows(prev, 1)  # Az előzőt töröljük, az utolsót megtartjuk
+            else:
+                break
+        
+        # Biztosítsuk, hogy mindig legyen egy üres sor a végén
+        if self.model.rowCount() == 0 or not self.model.is_row_empty(self.model.rowCount() - 1):
+            self.model.insertRows(self.model.rowCount(), 1)
 
     def _on_model_data_changed(self, top_left: QModelIndex, bottom_right: QModelIndex, roles):
         # mentés ütemezés
