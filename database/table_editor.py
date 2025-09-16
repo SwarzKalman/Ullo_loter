@@ -97,6 +97,7 @@ class PandasTableModel(QAbstractTableModel):
                  unique_pair_cols: tuple[str, str] | None = None,
                  id_like_cols: list[str] | None = None,
                  versenyid_getter=None,
+                 readonly_cols: list[str] | None = None,
                  parent=None):
         super().__init__(parent)
         self.df = df.copy()
@@ -112,6 +113,8 @@ class PandasTableModel(QAbstractTableModel):
         self.unique_pair_cols = unique_pair_cols
         self.id_like_cols = set(id_like_cols or [])
         self.versenyid_getter = versenyid_getter
+        # readonly columns (e.g. Verseny_ID for competitions)
+        self.readonly_cols = set(readonly_cols or [])
         # mely oszlopokban keresünk
         self._search_cols_default = ["Versenyengedelyszam", "Name", "Phone number", "Email", "Egyesulet"]
         self._rebuild_search_blob()
@@ -174,7 +177,13 @@ class PandasTableModel(QAbstractTableModel):
     def flags(self, index: QModelIndex):
         if not index.isValid():
             return Qt.ItemFlag.NoItemFlags
-        return Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsEditable
+        r, c = index.row(), index.column()
+        col_name = self.columns[c] if 0 <= c < len(self.columns) else None
+        flags = Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled
+        # If the column is not marked readonly, allow editing
+        if col_name is None or col_name not in getattr(self, "readonly_cols", set()):
+            flags |= Qt.ItemFlag.ItemIsEditable
+        return flags
 
     def setData(self, index: QModelIndex, value, role=Qt.ItemDataRole.EditRole):
         if role != Qt.ItemDataRole.EditRole or not index.isValid():
@@ -492,7 +501,8 @@ class TableTab(QWidget):
     def __init__(self, load_func, save_func, columns, parent=None, update_last_changed_col=None, gender_col=None,
                  enable_search=False, autofill_from_users=None, versenyid_selector=None,
                  unique_pair_cols: tuple[str, str] | None = None, id_like_cols: list[str] | None = None,
-                 allow_sorting: bool = True, show_add_button: bool = True, hide_add_button: bool = False):
+                 allow_sorting: bool = True, show_add_button: bool = True, hide_add_button: bool = False,
+                 readonly_cols: list[str] | None = None, versenyes_mode: bool = False):
         super().__init__(parent)
         self.load_func = load_func
         self.save_func = save_func
@@ -565,6 +575,8 @@ class TableTab(QWidget):
             return self.selected_versenyid or ""
 
         # Model és Proxy
+        self.readonly_cols = readonly_cols or []
+        self.versenyes_mode = versenyes_mode
         self.model = PandasTableModel(
             df, self.columns,
             update_last_changed_col=self.update_last_changed_col,
@@ -573,7 +585,8 @@ class TableTab(QWidget):
             on_error=lambda t, m: QMessageBox.warning(self, t, m),
             unique_pair_cols=self.unique_pair_cols,
             id_like_cols=self.id_like_cols,
-            versenyid_getter=_get_selected_versenyid
+            versenyid_getter=_get_selected_versenyid,
+            readonly_cols=self.readonly_cols
         )
         self.proxy = SearchFilterProxy(self.model, row_limit=500, versenyid_getter=_get_selected_versenyid)
         # Apply initial verseny filter (in case a value was already selected)
@@ -607,7 +620,7 @@ class TableTab(QWidget):
             add_btn = QPushButton("Új sor hozzáadása")
             add_btn.clicked.connect(self.add_row)
             btn_layout.addWidget(add_btn)
-
+ 
         # "További találatok…" gomb
         self.more_btn = QPushButton("További találatok…")
         def _more():
@@ -617,6 +630,84 @@ class TableTab(QWidget):
             self.view.scrollToBottom()
         self.more_btn.clicked.connect(_more)
         btn_layout.addWidget(self.more_btn)
+
+        # Versenyek-specifikus: mutatja a következő generálandó ID-t és kitöltő gomb
+        if getattr(self, "versenyes_mode", False):
+            self.next_id_label = QLabel("")
+            fill_next_btn = QPushButton("Kitöltés következő ID-val")
+            def _compute_next_vid():
+                try:
+                    # load persisted versenyek IDs
+                    vdf = load_versenyek_db()
+                    vals = vdf.get("Verseny_ID", pd.Series(dtype=str)).dropna().astype(str).str.strip()
+
+                    # also include in-memory IDs that may have been assigned but not yet saved
+                    try:
+                        if hasattr(self, "model") and "Verseny_ID" in self.model.df.columns:
+                            mem = self.model.df["Verseny_ID"].fillna("").astype(str).str.strip()
+                            vals = pd.concat([vals, mem], ignore_index=True)
+                    except Exception:
+                        # non-fatal: continue with persisted values
+                        pass
+
+                    nums = []
+                    import re
+                    for vv in vals:
+                        if not isinstance(vv, str):
+                            continue
+                        vv = vv.strip()
+                        if not vv:
+                            continue
+                        # prefer VID_ prefix
+                        if vv.upper().startswith("VID_"):
+                            s = vv[4:]
+                            if s.isdigit():
+                                nums.append(int(s))
+                                continue
+                        # plain digits
+                        if vv.isdigit():
+                            nums.append(int(vv))
+                            continue
+                        # fallback: take trailing digits if any
+                        m = re.search(r"(\d+)$", vv)
+                        if m:
+                            nums.append(int(m.group(1)))
+                    next_num = max(nums) + 1 if nums else 1
+                    return f"VID_{next_num:05d}"
+                except Exception:
+                    return "VID_00001"
+            def _update_next_label():
+                self.next_id_label.setText(f"Következő ID: {_compute_next_vid()}")
+            _update_next_label()
+
+            def _fill_next():
+                next_vid = _compute_next_vid()
+                sel = self.view.selectionModel().selectedIndexes()
+                if sel:
+                    proxy_idx = sel[0]
+                    src_idx = self.proxy.mapToSource(proxy_idx)
+                    target_row = src_idx.row()
+                else:
+                    target_row = None
+                    for r in range(self.model.rowCount()):
+                        try:
+                            if self.model.is_row_empty(r):
+                                target_row = r
+                                break
+                        except Exception:
+                            pass
+                    if target_row is None:
+                        target_row = self.model.rowCount()
+                        self.model.insertRows(target_row, 1)
+                if "Verseny_ID" in self.columns:
+                    col_idx = self.columns.index("Verseny_ID")
+                    self.model.setData(self.model.index(target_row, col_idx), next_vid)
+                    _update_next_label()
+
+            btn_layout.addWidget(self.next_id_label)
+            btn_layout.addWidget(fill_next_btn)
+            fill_next_btn.clicked.connect(_fill_next)
+
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
 
@@ -917,7 +1008,9 @@ class MainWindow(QWidget):
             unique_pair_cols=None,
             id_like_cols=[],
             allow_sorting=True,
-            show_add_button=False
+            show_add_button=False,
+            readonly_cols=["Verseny_ID"],
+            versenyes_mode=True
         )
         tabs.addTab(self.versenyek_tab, "Versenyek")
 

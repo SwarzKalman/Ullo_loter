@@ -125,3 +125,87 @@ selected_vid='VID_00001', row=5, row_vid='VID_00003'
 [2025-09-16 16:09:19] Verseny_ID filter mismatch
 selected_vid='VID_00001', row=5, row_vid='VID_00003'
 
+[2025-09-16 16:14:02] flush_and_wait hiba
+Traceback (most recent call last):
+  File "D:\nextcloud\projektek\gitrepos\Ullo_loter\database\table_editor.py", line 878, in flush_and_wait
+    if self._save_timer.isActive():
+       ^^^^^^^^^^^^^^^^
+AttributeError: 'TableTab' object has no attribute '_save_timer'
+
+
+[2025-09-16 16:14:02] flush_and_wait hiba
+Traceback (most recent call last):
+  File "D:\nextcloud\projektek\gitrepos\Ullo_loter\database\table_editor.py", line 878, in flush_and_wait
+    if self._save_timer.isActive():
+       ^^^^^^^^^^^^^^^^
+AttributeError: 'TableTab' object has no attribute '_save_timer'
+
+
+[2025-09-16 16:14:02] flush_and_wait hiba
+Traceback (most recent call last):
+  File "D:\nextcloud\projektek\gitrepos\Ullo_loter\database\table_editor.py", line 878, in flush_and_wait
+    if self._save_timer.isActive():
+       ^^^^^^^^^^^^^^^^
+AttributeError: 'TableTab' object has no attribute '_save_timer'
+
+
+[2025-09-16 16:14:09] flush_and_wait hiba
+Traceback (most recent call last):
+  File "d:\nextcloud\projektek\gitrepos\Ullo_loter\database\table_editor.py", line 878, in flush_and_wait
+    if self._save_timer.isActive():
+       ^^^^^^^^^^^^^^^^
+AttributeError: 'TableTab' object has no attribute '_save_timer'
+
+
+[2025-09-16 16:14:09] flush_and_wait hiba
+Traceback (most recent call last):
+  File "d:\nextcloud\projektek\gitrepos\Ullo_loter\database\table_editor.py", line 878, in flush_and_wait
+    if self._save_timer.isActive():
+       ^^^^^^^^^^^^^^^^
+AttributeError: 'TableTab' object has no attribute '_save_timer'
+
+
+[2025-09-16 16:14:09] flush_and_wait hiba
+Traceback (most recent call last):
+  File "d:\nextcloud\projektek\gitrepos\Ullo_loter\database\table_editor.py", line 878, in flush_and_wait
+    if self._save_timer.isActive():
+       ^^^^^^^^^^^^^^^^
+AttributeError: 'TableTab' object has no attribute '_save_timer'
+
+
+[2025-09-16 16:14:53] flush_and_wait hiba
+Traceback (most recent call last):
+  File "d:\nextcloud\projektek\gitrepos\Ullo_loter\database\table_editor.py", line 881, in flush_and_wait
+    if self._save_timer.isActive():
+       ^^^^^^^^^^^^^^^^
+AttributeError: 'TableTab' object has no attribute '_save_timer'
+
+
+[2025-09-16 16:14:53] flush_and_wait hiba
+Traceback (most recent call last):
+  File "d:\nextcloud\projektek\gitrepos\Ullo_loter\database\table_editor.py", line 881, in flush_and_wait
+    if self._save_timer.isActive():
+       ^^^^^^^^^^^^^^^^
+AttributeError: 'TableTab' object has no attribute '_save_timer'
+
+
+[2025-09-16 16:14:53] flush_and_wait hiba
+Traceback (most recent call last):
+  File "d:\nextcloud\projektek\gitrepos\Ullo_loter\database\table_editor.py", line 881, in flush_and_wait
+    if self._save_timer.isActive():
+       ^^^^^^^^^^^^^^^^
+AttributeError: 'TableTab' object has no attribute '_save_timer'
+
+
+[2025-09-16 16:17:12] Verseny_ID filter mismatch
+selected_vid='VID_00001', row=5, row_vid='VID_00003'
+
+[2025-09-16 16:22:26] Verseny_ID filter mismatch
+selected_vid='VID_00001', row=5, row_vid='VID_00003'
+
+[2025-09-16 16:24:19] Verseny_ID filter mismatch
+selected_vid='VID_00001', row=5, row_vid='VID_00003'
+
+[2025-09-16 16:24:37] Verseny_ID filter mismatch
+selected_vid='VID_00001', row=5, row_vid='VID_00003'
+
