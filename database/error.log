@@ -119,3 +119,9 @@ selected_vid='VID_00003', row=3, row_vid='VID_00001'
 [2025-09-16 12:46:20] Verseny_ID filter mismatch
 selected_vid='VID_00003', row=4, row_vid='VID_00001'
 
+[2025-09-16 16:08:19] Verseny_ID filter mismatch
+selected_vid='VID_00001', row=5, row_vid='VID_00003'
+
+[2025-09-16 16:09:19] Verseny_ID filter mismatch
+selected_vid='VID_00001', row=5, row_vid='VID_00003'
+

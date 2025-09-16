@@ -747,6 +747,9 @@ class TableTab(QWidget):
             idx_col = self.columns.index("Verseny_ID")
             idx = self.model.index(insert_at, idx_col)
             self.model.setData(idx, self.selected_versenyid or "")
+        # --- Reset sorting to default (unsorted) if sorting is enabled (for versenyek tab) ---
+        if self.allow_sorting and self.view.isSortingEnabled():
+            self.view.horizontalHeader().setSortIndicator(-1, Qt.SortOrder.AscendingOrder)
         proxy_row = self.proxy.mapFromSource(self.model.index(insert_at, 0)).row()
         if proxy_row >= 0:
             self.view.scrollTo(self.proxy.index(proxy_row, 0))
@@ -914,7 +917,7 @@ class MainWindow(QWidget):
             unique_pair_cols=None,
             id_like_cols=[],
             allow_sorting=True,
-            show_add_button=True
+            show_add_button=False
         )
         tabs.addTab(self.versenyek_tab, "Versenyek")
 
