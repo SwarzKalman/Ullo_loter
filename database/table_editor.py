@@ -86,6 +86,8 @@ class PandasTableModel(QAbstractTableModel):
     - Autofill támogatás (első oszlop beírásakor, ha be van állítva egy users_df loader)
     - Opcionális: egyedi (A,B) kulcspár tiltja a duplikációt
     - Opcionális: 'id-like' oszlopok normalizálása (pl. '123.0' -> '123')
+    - ÚJ: opcionális verseny-id getter: ha beállítva és a sor első cellájába beírtak,
+           automatikusan kitölti a "Verseny_ID" oszlopot az aktuális verseny azonosítójával.
     """
     def __init__(self, df: pd.DataFrame, columns: list[str],
                  update_last_changed_col: str | None = None,
@@ -94,6 +96,7 @@ class PandasTableModel(QAbstractTableModel):
                  on_error=None,
                  unique_pair_cols: tuple[str, str] | None = None,
                  id_like_cols: list[str] | None = None,
+                 versenyid_getter=None,
                  parent=None):
         super().__init__(parent)
         self.df = df.copy()
@@ -108,6 +111,7 @@ class PandasTableModel(QAbstractTableModel):
         self.on_error = on_error
         self.unique_pair_cols = unique_pair_cols
         self.id_like_cols = set(id_like_cols or [])
+        self.versenyid_getter = versenyid_getter
         # mely oszlopokban keresünk
         self._search_cols_default = ["Versenyengedelyszam", "Name", "Phone number", "Email", "Egyesulet"]
         self._rebuild_search_blob()
@@ -205,6 +209,9 @@ class PandasTableModel(QAbstractTableModel):
             a_col, b_col = self.unique_pair_cols
             a_val = new_val if col_name == a_col else self._normalize_id_like(a_col, self.df.at[r, a_col] if a_col in self.df.columns else "")
             b_val = new_val if col_name == b_col else self._normalize_id_like(b_col, self.df.at[r, b_col] if b_col in self.df.columns else "")
+            # If either key is empty, skip duplicate check so the user can clear entries.
+            if str(a_val).strip() == "" or str(b_val).strip() == "":
+                pass
             if a_col in self.df.columns and b_col in self.df.columns:
                 mask = (self.df.index != r) & (self.df[a_col].astype(str).map(lambda x: self._normalize_id_like(a_col, x)) == a_val) & \
                        (self.df[b_col].astype(str).map(lambda x: self._normalize_id_like(b_col, x)) == b_val)
@@ -241,6 +248,25 @@ class PandasTableModel(QAbstractTableModel):
                             self.df.iat[r, col_idx] = val2
                             top_left = self.index(r, col_idx)
                             self.dataChanged.emit(top_left, top_left, [Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole])
+
+            # ÚJ: ha van verseny-id getter és a Verseny_ID oszlop létezik,
+            # akkor automatikusan töltsük be az aktuális Verseny_ID-t, ha az még üres.
+            if self.versenyid_getter and "Verseny_ID" in self.columns:
+                try:
+                    idx_vid = self.columns.index("Verseny_ID")
+                    cur_vid = "" if pd.isna(self.df.iat[r, idx_vid]) else self._normalize_id_like("Verseny_ID", self.df.iat[r, idx_vid]).strip()
+                    if not cur_vid:
+                        try:
+                            vid = self.versenyid_getter()
+                        except Exception:
+                            vid = ""
+                        if vid:
+                            self.df.iat[r, idx_vid] = vid
+                            top_left = self.index(r, idx_vid)
+                            self.dataChanged.emit(top_left, top_left, [Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole])
+                except Exception:
+                    # nem kritikus, csak logoljuk
+                    log_error("Verseny_ID autofill hiba", traceback.format_exc())
 
         # Last_changed frissítés
         if self.update_last_changed_col and col_name != self.update_last_changed_col:
@@ -502,6 +528,10 @@ class TableTab(QWidget):
             self.versenyid_selector.currentIndexChanged.connect(self.on_versenyid_changed)
             self.selected_versenyid = self.versenyid_selector.currentText()
 
+        # helper getter for model to read current selected verseny id
+        def _get_selected_versenyid():
+            return self.selected_versenyid or ""
+
         # Model és Proxy
         self.model = PandasTableModel(
             df, self.columns,
@@ -510,7 +540,8 @@ class TableTab(QWidget):
             autofill_from_users=self.autofill_from_users,
             on_error=lambda t, m: QMessageBox.warning(self, t, m),
             unique_pair_cols=self.unique_pair_cols,
-            id_like_cols=self.id_like_cols
+            id_like_cols=self.id_like_cols,
+            versenyid_getter=_get_selected_versenyid
         )
         self.proxy = SearchFilterProxy(self.model, row_limit=500)
 
@@ -608,9 +639,16 @@ class TableTab(QWidget):
             if top_left.row() <= last <= bottom_right.row():
                 if not self.model.is_row_empty(last):
                     self.model.insertRows(self.model.rowCount(), 1)
-                self._ensure_trailing_empty_row()
         except Exception:
             pass
+
+        # Mindig ellenőrizzük és korrekciózzuk az üres sorokat,
+        # így ha valaki elkezdett írni egy sorba majd kitörölte, nem lesz két üres sorunk.
+        try:
+            self._ensure_trailing_empty_row()
+        except Exception:
+            pass
+
         self._update_more_button_visibility()
         self._update_count_label()
 
@@ -843,7 +881,6 @@ class MainWindow(QWidget):
         except Exception:
             pass
         super().closeEvent(event)
-
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
