@@ -55,6 +55,32 @@ def _write_recovery_csv(df: pd.DataFrame, base_path: str) -> str | None:
         log_error("Autosave CSV írási hiba", traceback.format_exc())
         return None
 
+class RefreshingComboBox(QComboBox):
+    """
+    QComboBox that invokes a refresh callback before showing the popup.
+
+    Usage:
+        cb = RefreshingComboBox()
+        cb.refresh_callback = lambda: ...  # must update items on the combo
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.refresh_callback = None
+
+    def showPopup(self):
+        # Call the refresh callback each time the popup is opened so that
+        # the item list reflects the current persisted versenyek DB.
+        try:
+            if callable(self.refresh_callback):
+                try:
+                    self.refresh_callback()
+                except Exception:
+                    # Non-fatal: log and continue to show popup with current items
+                    log_error("RefreshingComboBox callback error", traceback.format_exc())
+        except Exception:
+            pass
+        super().showPopup()
+
 
 class SaveWorker(QObject):
     finished = pyqtSignal(bool, str)  # success, error detail (traceback)
@@ -985,8 +1011,33 @@ class MainWindow(QWidget):
             log_error("Versenyek DB betöltési hiba", traceback.format_exc())
             versenyek_df = pd.DataFrame(columns=["Verseny_ID"])
         versenyid_list = [str(v) for v in versenyek_df["Verseny_ID"].dropna().unique() if str(v).strip()] if "Verseny_ID" in versenyek_df.columns else []
-        versenyid_selector = QComboBox()
-        versenyid_selector.addItems(versenyid_list)
+
+        # Use RefreshingComboBox so the list is reloaded each time the user opens the dropdown.
+        versenyid_selector = RefreshingComboBox()
+
+        def _refresh_versenyid_items():
+            try:
+                vdf = load_versenyek_db()
+                items = [str(v) for v in vdf["Verseny_ID"].dropna().unique() if str(v).strip()] if "Verseny_ID" in vdf.columns else []
+                cur = versenyid_selector.currentText()
+                versenyid_selector.clear()
+                if items:
+                    versenyid_selector.addItems(items)
+                # try to preserve selection if possible
+                if cur:
+                    idx = versenyid_selector.findText(cur)
+                    if idx >= 0:
+                        versenyid_selector.setCurrentIndex(idx)
+                    else:
+                        # if current value isn't in the reloaded list, keep it as text
+                        versenyid_selector.addItem(cur)
+                        versenyid_selector.setCurrentText(cur)
+            except Exception:
+                log_error("VersenyID lista frissítési hiba", traceback.format_exc())
+
+        versenyid_selector.refresh_callback = _refresh_versenyid_items
+        # initial population
+        versenyid_selector.refresh_callback()
 
         self.eredmeny_tab = TableTab(
             load_eredmeny_db, save_eredmeny_db, EREDMENY_COLUMNS,
